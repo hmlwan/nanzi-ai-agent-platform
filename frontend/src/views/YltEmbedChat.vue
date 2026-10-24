@@ -1,10 +1,11 @@
 <template>
   <div
     class="flex h-full w-full max-w-full font-sans overflow-hidden relative min-w-0"
-    :class="config.theme === 'dark' ? 'dark bg-gray-900 text-gray-100' : 'bg-white text-gray-900'"
+    :class="[config.theme === 'dark' ? 'dark bg-gray-900 text-gray-100' : 'bg-white text-gray-900', { 'ylt-host-layout': yltHostLayout }]"
   >
     <!-- Sidebar (Desktop/Mobile) -->
     <ChatHistorySidebar
+      v-if="!yltHostLayout"
       v-model:visible="showHistorySidebar"
       v-model="historyKeyword"
       :loading="loadingHistory"
@@ -83,6 +84,7 @@
 
       <!-- Dynamic Header Status (New) -->
       <div
+        v-if="!yltHostLayout"
         class="h-12 border-b border-gray-100 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md px-4 flex items-center justify-between z-30 flex-shrink-0"
       >
         <div class="flex items-center space-x-2 min-w-0">
@@ -459,7 +461,7 @@
 
       <!-- Main Chat Area -->
       <div
-        class="flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-4 pt-3 sm:pt-4 pb-1 sm:pb-1.5 space-y-4 sm:space-y-6 w-full max-w-full min-w-0"
+        class="embed-message-area flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-4 pt-3 sm:pt-4 pb-1 sm:pb-1.5 space-y-4 sm:space-y-6 w-full max-w-full min-w-0"
         ref="messagesContainer"
         @scroll="handleScroll"
       >
@@ -507,7 +509,7 @@
       </div>
       <!-- Welcome / Empty State (Smart Dashboard) -->
       <WelcomeDashboard
-        v-else-if="messages.length === 0"
+        v-else-if="messages.length === 0 && !yltHostLayout"
         :welcome-message="config.welcomeMessage"
         :slash-commands="effectiveSlashCommands"
         :welcome-cards="welcomeCards"
@@ -520,6 +522,10 @@
         @select-knowledge-base="openKnowledgePortal"
         @open-workspace="openWorkspaceDrawer"
       />
+      <!-- 一览通宿主已提供业务欢迎页，嵌入后只保留简短的聊天引导。 -->
+      <div v-if="yltHostLayout && !isInitialLoading && messages.length === 0" class="ylt-chat-welcome">
+        <span>AI</span><h2>从这里继续聊</h2><p>围绕岗位要求与实际材料，逐步明确需要核实的问题。</p>
+      </div>
       <!-- 小程序宿主：已授权智能体为空时的兜底（浏览器/iframe 既有行为不受影响） -->
       <p
         v-if="isMiniprogramHost() && !isLoadingAgents && allowedAgents.length === 0"
@@ -1046,6 +1052,13 @@
               @open-citation="({ citation, event }) => openCitationPopover(citation, event)"
             />
             <ChatBIMetadataGuide v-if="msg.chatbiMetadataGuide" :guide="msg.chatbiMetadataGuide" @select="handleQuickQuestion" />
+            <!-- 一览通业务按钮只发送保存意图，正文和业务版本由宿主后端可信读取。 -->
+            <div v-if="yltHostLayout && config.businessResultType === 'PROFILE' && msg.trace_id && visibleStreamBody(msg) && !msg.userQuestion && !isProcessing"
+              class="mt-2 flex justify-end border-t border-gray-100 pt-2 dark:border-gray-800">
+              <button type="button" class="rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-default disabled:opacity-60 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-950"
+                :disabled="savedBusinessProfiles.has(`${conversationId}:${msg.trace_id}`)"
+                @click="requestBusinessProfileSave(msg)">{{ savedBusinessProfiles.has(`${conversationId}:${msg.trace_id}`) ? '已保存当前版本' : '保存为岗位画像' }}</button>
+            </div>
             <div
               v-if="!(isProcessing && msg.id === lastAgentMessage?.id)"
               class="flex min-w-0 max-w-full flex-nowrap items-center space-x-2 overflow-x-auto sm:overflow-x-visible mt-1 scrollbar-hide"
@@ -1280,7 +1293,7 @@
                 :token-label="getMessageTokenAmount(msg)"
                 :can-save-report="canSaveGoldenReportFromMessage(msg) && checkRole(msg, 'agent') && !msg.isThinking"
                 :chatbi-actions="msg.chatbiInsight?.actions || []"
-                :show-generic-continue="checkRole(msg, 'agent') && isGeneralAgentMessage(msg) && !msg.chatbiInsight?.actions?.length && !msg.isThinking && visibleStreamBody(msg)"
+                :show-generic-continue="checkRole(msg, 'agent') && isGeneralAgentMessage(msg) && !msg.chatbiInsight?.actions?.length && !msg.isThinking && !!visibleStreamBody(msg)"
                 @export-data="msg.trace_id && exportData(msg.trace_id, 'xlsx')"
                 @open-reusable-results="openReusableResults(msg.reusableResultStatus?.resultId, msg.trace_id, msg.reusableResultStatus?.status)"
                 @open-artifacts="openMessageArtifacts(msg.trace_id)"
@@ -1338,7 +1351,7 @@
     />
 
     <!-- Input Area -->
-    <div v-if="hasPermission && !urlAgentAccessError" class="flex-shrink-0 bg-white dark:bg-gray-900 relative z-20">
+    <div v-if="hasPermission && !urlAgentAccessError" class="embed-input-area flex-shrink-0 bg-white dark:bg-gray-900 relative z-20">
       <div
         v-if="quotaBannerMessage"
         class="px-4 py-2 text-xs border-b"
@@ -1358,7 +1371,7 @@
         v-model="userInput"
         :is-processing="isProcessing || remoteRunBusy || recoveryLocking"
         :is-submitting="sendLocked"
-        :show-shortcuts="!isMobile && config.showShortcuts"
+        :show-shortcuts="!yltHostLayout && !isMobile && config.showShortcuts"
         :slash-commands="effectiveSlashCommands"
         :allowed-agents="allowedAgents"
         :current-user="currentUser"
@@ -1880,6 +1893,7 @@
     />
     <!-- Settings Modal -->
     <ChatTour
+      v-if="!yltHostLayout"
       ref="tourRef"
       v-model="tourActive"
       :steps="TOUR_STEPS"
@@ -2515,6 +2529,7 @@ import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed, trigg
 import { CommandLineIcon } from "@heroicons/vue/24/outline";
 import { useRouter } from "vue-router";
 import axios from "@/utils/axios";
+import { extractApiErrorDetail } from "@/utils/apiErrorDetail";
 import { finalizeConversation } from "@/utils/conversationFinalize";
 import ActiveRunsPopover from "@/components/chat/ActiveRunsPopover.vue";
 import ChatTour from "@/components/embed/ChatTour.vue";
@@ -2871,7 +2886,7 @@ interface ChatSendOverrides {
 interface QuickQuestionContext {
   source: "chatbi_result";
   result_id?: string;
-  requires_fresh_data: true;
+  requires_fresh_data: boolean;
 }
 
 interface QuickQuestionPayload {
@@ -3222,6 +3237,8 @@ const waitForTourAnchor = async (selector: string, timeout = 1200) => {
  * 不额外弹确认框——页面刚加载时用户基本还没开始输入。
  */
 const prepareEmptyConversationForTour = async () => {
+  // 一览通的会话由宿主业务记录绑定，功能引导不能替它新建或切换会话。
+  if (yltHostLayout) return;
   if (messages.value.length === 0) return;
   startNewConversation();
   await nextTick();
@@ -3229,6 +3246,7 @@ const prepareEmptyConversationForTour = async () => {
 };
 
 const handleReplayTour = async () => {
+  if (yltHostLayout) return;
   showSettings.value = false;
   await nextTick();
   await prepareEmptyConversationForTour();
@@ -3244,6 +3262,7 @@ let tourBootTimer: number | undefined;
 
 onMounted(() => {
   tourBootTimer = window.setTimeout(async () => {
+    if (yltHostLayout) return;
     if (!hasPermission.value) return;
     // 生成中不打断；下次进入仍是未完成状态，会重新尝试
     if (isProcessing.value) return;
@@ -3815,6 +3834,7 @@ const config = reactive({
   token: "",
   agentId: "",
   instanceId: "", // For isolation
+  businessResultType: "", // 由一览通宿主显式启用业务保存入口，普通平台页面默认不显示。
   theme: "light",
   welcomeMessage: "",
   overrideModel: "", // To override default model
@@ -4256,20 +4276,23 @@ const saveRoutingSettings = () => {
 const saveRoutingPreference = async (mode: "auto" | "expert", agentId = "") => {
     if (isRoutingSettingsLocked.value) return;
     const normalizedAgentId = mode === "expert" ? String(agentId || "").trim() : "";
-    // 新建会话要沿用账号默认，本地缓存必须先同步，否则会拿到上一次的旧值。
-    savedRoutingPreference.value = {
-        routing_mode: mode,
-        expert_agent_id: normalizedAgentId,
-        routing_configured: true,
-    };
     try {
         await axios.put("/api/portal/portal-prefs/routing", {
             routing_mode: mode,
             expert_agent_id: normalizedAgentId,
         });
+        // 只有后端校验并保存成功，才更新新建会话使用的账号默认。
+        savedRoutingPreference.value = {
+            routing_mode: mode,
+            expert_agent_id: normalizedAgentId,
+            routing_configured: true,
+        };
+        return true;
     } catch (error) {
         console.error("Failed to save routing preference to Redis", error);
-        showToast("路由偏好保存失败，请稍后重试", "error");
+        const payload = (error as { response?: { data?: unknown } } | null)?.response?.data;
+        showToast(extractApiErrorDetail(payload, "路由偏好保存失败，请稍后重试"), "error");
+        return false;
     }
 };
 const handleEmbedModelSelection = (model: string) => {
@@ -4351,7 +4374,7 @@ const loadConversationRouting = async (cid: string) => {
   }
 };
 
-/** 写入会话自己的专家选择；失败只告警——本地切换已经生效，不打断用户。 */
+/** 写入会话自己的专家选择，并返回保存结果供切换入口提示。 */
 const saveConversationRouting = async (
   cid: string,
   mode: "auto" | "expert",
@@ -4368,38 +4391,61 @@ const saveConversationRouting = async (
       },
       { headers: embedAuthHeaders() },
     );
+    return true;
   } catch (e) {
     console.warn("[Routing] Failed to save conversation routing:", e);
+    return false;
   }
 };
 
-const switchToAuto = () => {
+let routingSwitchPending = false;
+const switchToAuto = async () => {
     if (isRoutingSettingsLocked.value) {
       showToast("当前链接已锁定指定智能体，无法切换到智能委派", "warning");
       return;
     }
-    config.routingMode = "auto";
-    config.expertAgentId = "";
-    void saveRoutingPreference("auto");
-    void saveConversationRouting(conversationId.value, "auto");
-    showToast("已切换为智能委派模式", "success");
+    if (routingSwitchPending) return;
+    routingSwitchPending = true;
+    const cid = conversationId.value;
+    try {
+      if (!await saveRoutingPreference("auto")) return;
+      if (conversationId.value !== cid || isRoutingSettingsLocked.value) return;
+      const saved = await saveConversationRouting(cid, "auto");
+      if (conversationId.value !== cid || isRoutingSettingsLocked.value) return;
+      config.routingMode = "auto";
+      config.expertAgentId = "";
+      showToast(
+        saved === false ? "默认模式已保存，但当前会话保存失败，请重新选择" : "已切换为智能委派模式",
+        saved === false ? "warning" : "success",
+      );
+    } finally {
+      routingSwitchPending = false;
+    }
 };
-const switchToExpert = (agentId: string) => {
+const switchToExpert = async (agentId: string) => {
     if (isRoutingSettingsLocked.value) {
       showToast("当前链接已锁定指定智能体，无法切换其他专家", "warning");
       return;
     }
     const normalizedAgentId = String(agentId || "").trim();
-    if (!normalizedAgentId) return;
-    config.expertAgentId = normalizedAgentId;
-    config.routingMode = "expert";
-    void saveRoutingPreference("expert", normalizedAgentId);
-    void saveConversationRouting(conversationId.value, "expert", normalizedAgentId);
-    // URL 深链锁定初始化时不提示，避免首屏弹出
-    if (!isRoutingSettingsLocked.value) {
+    if (!normalizedAgentId || routingSwitchPending) return;
+    routingSwitchPending = true;
+    const cid = conversationId.value;
+    try {
+      if (!await saveRoutingPreference("expert", normalizedAgentId)) return;
+      if (conversationId.value !== cid || isRoutingSettingsLocked.value) return;
+      const saved = await saveConversationRouting(cid, "expert", normalizedAgentId);
+      if (conversationId.value !== cid || isRoutingSettingsLocked.value) return;
+      config.expertAgentId = normalizedAgentId;
+      config.routingMode = "expert";
       const agent = allowedAgents.value.find((a: any) => a.id === normalizedAgentId) || pinnedAgent.value;
       const name = agent?.display_name || agent?.name || "专家";
-      showToast(`已切换至专家：${name}`, "success");
+      showToast(
+        saved === false ? "默认专家已保存，但当前会话保存失败，请重新选择" : `已切换至专家：${name}`,
+        saved === false ? "warning" : "success",
+      );
+    } finally {
+      routingSwitchPending = false;
     }
 };
 const onModeChange = (mode: string) => {
@@ -5322,6 +5368,7 @@ const currentStreamAgentMessage = (): Message | null => {
   if (activeStreamDraft?.msg) return activeStreamDraft.msg;
   for (let index = messages.value.length - 1; index >= 0; index -= 1) {
     const candidate = messages.value[index];
+    if (!candidate) continue;
     // 首屏历史末尾是 system 分隔符（"以上是历史会话…"），不是本轮助手消息；
     // 收尾绝不能落到它身上。
     if (candidate.role === "system") continue;
@@ -5333,7 +5380,8 @@ const currentStreamAgentMessage = (): Message | null => {
 
 const currentStreamUserMessage = (): Message | undefined => {
   for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-    if (messages.value[index].role === "user") return messages.value[index];
+    const candidate = messages.value[index];
+    if (candidate?.role === "user") return candidate;
   }
   return undefined;
 };
@@ -5466,10 +5514,13 @@ const restoreEmbedStreamSnapshot = async (expectedGeneration?: number) => {
     messages.value = [...messages.value, ...restored];
 
     if (restoredAgent) {
+      // 使用响应式列表中的代理，保留Me切回会话后正文继续刷新的修复。
+      const reactiveAgent = messages.value[messages.value.length - 1];
+      if (!reactiveAgent) return;
       // 登记续显目标：切回后事件要点进这条草稿，卸载前也要靠它强制落盘。
       activeStreamDraft = {
         conversationId: cid,
-        msg: restoredAgent,
+        msg: reactiveAgent,
         lastAppliedSeq: Number(snapshot.lastSeq || 0) || 0,
       };
       recoveryGraceExpired.value = false;
@@ -5831,7 +5882,7 @@ const settleRecoveredTimeline = () => {
       });
     }
     msg.isThinking = false;
-    msg.processNarrationPending = false;
+    msg.processNarrationPending = "";
   }
   if (thoughtTimer) {
     clearInterval(thoughtTimer);
@@ -5996,7 +6047,6 @@ watch(conversationId, () => {
 const { contextUsage, refreshContextUsage } = useContextUsage();
 const {
   sandboxWorkspaceStatus,
-  sandboxWorkspaceStatusLoaded,
   sandboxWorkspaceError,
   sandboxWorkspaceInstanceId,
   sandboxWorkspaceStartedAt,
@@ -6006,22 +6056,16 @@ const {
   sandboxWarmHintSubtitle,
   dismissSandboxWarmHint,
   showSandboxWarmHint,
-  effectiveSandboxPolicy,
   sandboxBackend,
-  isSandboxWorkspacePolicy,
   showSandboxStopConfirm,
   showDockerTerminal,
   showK8sTerminal,
-  resetSandboxWorkspaceState,
   refreshSandboxWorkspaceStatus,
   sandboxWorkspaceRefreshing,
-  pollSandboxWorkspaceUntilRunning,
-  maybeAutoWarmSandbox,
   ensureSandboxWorkspace,
   openDockerTerminal,
   handleStopSandboxWorkspaceRequest,
   confirmStopSandboxWorkspace,
-  stopSandboxWorkspace,
   restartSandboxWorkspace,
 } = useSandboxWorkspace({
   conversationId,
@@ -6186,10 +6230,6 @@ const checkConversationAdoption = async (
   }
   return 'unknown';
 };
-
-/** 仅用于「能否采用」的布尔判断（不采用即返回 false）。 */
-const isConversationAdoptable = async (cid: string): Promise<boolean> =>
-  (await checkConversationAdoption(cid)) === 'adoptable';
 
 /** 宿主下发的欢迎语覆盖文案：换身份时用于恢复「宿主口径」，而不是恢复上一位用户的姓名。 */
 let welcomeMessageFromHost = "";
@@ -8409,7 +8449,7 @@ const updateFullScreenStatus = () => {
 };
 
 // —— 移动端操作抽屉（<640px 专用）：一个抽屉、两个入口 ——
-const mobileActionsMessageId = ref<string | null>(null);
+const mobileActionsMessageId = ref<number | null>(null);
 const mobileActionsFocus = ref<"data" | null>(null);
 
 const openMobileActions = (msg: Message, focus: "data" | null) => {
@@ -8426,6 +8466,8 @@ const closeMobileActions = () => {
 // 桌面端（≥640px）这些入口仍直接显示在头部，本状态恒为 false。
 // 定义位置必须在 updateWidth 之前——updateWidth 在挂载时即被调用，否则会踩 const 的 TDZ。
 const showHeaderMore = ref(false);
+/** 一览通可选宿主外观，只调整展示；认证、权限与执行链仍走原有实现。 */
+const yltHostLayout = new URLSearchParams(window.location.search).get("host_layout") === "ylt";
 const headerMoreRef = ref<HTMLElement | null>(null);
 /** 弹层里是否存在「值得提示」的状态：给「更多」按钮加小绿点，避免收起后状态不可见。 */
 const headerMoreBadge = computed(() => browserPanelVisible.value || Boolean(config.enableGrounding));
@@ -8581,6 +8623,26 @@ const postMessageToHost = (payload: any) => {
     "*"
   );
 };
+const savedBusinessProfiles = ref(new Set<string>());
+const businessHostOrigin = ref("");
+// 执行ID只定位目标回答，不向宿主传递或信任浏览器提供的报告正文。
+const requestBusinessProfileSave = (msg: Message) => {
+  if (!yltHostLayout || config.businessResultType !== "PROFILE" || !msg.trace_id || isProcessing.value) return;
+  if (savedBusinessProfiles.value.has(`${conversationId.value}:${msg.trace_id}`)) return;
+  postMessageToHost({ type: "SAVE_BUSINESS_PROFILE", conversation_id: conversationId.value, trace_id: msg.trace_id });
+};
+const handleBusinessProfileSaved = (event: MessageEvent) => {
+  const data = event.data;
+  if (!yltHostLayout || config.businessResultType !== "PROFILE" || event.source !== window.parent
+      || !businessHostOrigin.value || event.origin !== businessHostOrigin.value
+      || !config.instanceId || data.instance_id !== config.instanceId
+      || data.conversation_id !== conversationId.value || !Array.isArray(data.trace_ids) || data.trace_ids.length > 100) return;
+  for (const trace of data.trace_ids) {
+    if (typeof trace === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(trace)) {
+      savedBusinessProfiles.value.add(`${conversationId.value}:${trace}`);
+    }
+  }
+};
 const savedReportFocusRequest = ref<{
   report_id: string;
   run_id: string;
@@ -8605,6 +8667,7 @@ const openSavedReportFromHost = (target: any) => {
   setTimeout(() => openPortalDrawer(), 0);
 };
 const applyInitConfigPayload = (data: Record<string, any>) => {
+  config.businessResultType = yltHostLayout && data.business_result_type === "PROFILE" ? "PROFILE" : "";
   void loadWorkbenchHome();
   const incomingInstanceId = normalizeEmbedInstanceId(data.instance_id);
   const instanceChanged = Boolean(incomingInstanceId) && incomingInstanceId !== config.instanceId;
@@ -8811,7 +8874,7 @@ const applyHostInitConfig = async (data: Record<string, any>) => {
     maybeStripUrlAfterSessionReady();
     applyInitConfigPayload(data);
     postInitSuccess();
-    await initChat({ skipAuth: true });
+    await initChat({ skipAuth: true, hostConversationId: yltHostLayout ? String(data.conversation_id || "") : undefined });
     return;
   }
 
@@ -8832,7 +8895,7 @@ const applyHostInitConfig = async (data: Record<string, any>) => {
     console.log("[Auth] INIT_CONFIG without token; falling back to same-origin session cookie.");
     applyInitConfigPayload(data);
     postInitSuccess();
-    await initChat();
+    await initChat({ hostConversationId: yltHostLayout ? String(data.conversation_id || "") : undefined });
     return;
   }
   config.token = incomingToken;
@@ -8850,14 +8913,14 @@ const applyHostInitConfig = async (data: Record<string, any>) => {
     hasPermission.value = true;
     applyInitConfigPayload(data);
     postInitSuccess();
-    await initChat({ skipAuth: true });
+    await initChat({ skipAuth: true, hostConversationId: yltHostLayout ? String(data.conversation_id || "") : undefined });
     return;
   }
 
   hasPermission.value = true;
   applyInitConfigPayload(data);
   postInitSuccess();
-  initChat();
+  initChat({ hostConversationId: yltHostLayout ? String(data.conversation_id || "") : undefined });
 };
 const handlePostMessage = (event: MessageEvent) => {
   // Security check logic here in production
@@ -8872,7 +8935,14 @@ const handlePostMessage = (event: MessageEvent) => {
   }
   switch (data.type) {
     case "INIT_CONFIG":
+      if (event.source === window.parent) {
+        businessHostOrigin.value = event.origin;
+        savedBusinessProfiles.value.clear();
+      }
       void handleInitConfig(data);
+      break;
+    case "BUSINESS_PROFILE_SAVED":
+      handleBusinessProfileSaved(event);
       break;
     case "OPEN_SAVED_REPORT":
       openSavedReportFromHost(data.open_saved_report);
@@ -9389,7 +9459,7 @@ const validateToken = async (options?: { strict?: boolean }): Promise<boolean> =
 
   return false;
 };
-const initChat = async (options?: { skipAuth?: boolean }) => {
+const initChat = async (options?: { skipAuth?: boolean; hostConversationId?: string }) => {
   const initGeneration = conversationInitializationGeneration;
   isInitialLoading.value = true;
   try {
@@ -9557,7 +9627,20 @@ const initChat = async (options?: { skipAuth?: boolean }) => {
     if (conversationId.value) {
       fetchConversationHistory(false, initGeneration)
         // 历史加载完成后再还原流式草稿：已有落库终态时草稿会被丢弃，不会被重复注入。
-        .then(() => restoreEmbedStreamSnapshot(initGeneration))
+        .then(async (historyLoaded) => {
+          await restoreEmbedStreamSnapshot(initGeneration);
+          // 只为一览通宿主通知可发送：认证成功并不等于指定会话及历史已经就绪。
+          // 初始化失败、会话被切换或旧请求返回时，绝不触发宿主自动提问。
+          if (yltHostLayout && options?.hostConversationId && historyLoaded
+              && initGeneration === conversationInitializationGeneration
+              && conversationId.value === options.hostConversationId
+              && hasPermission.value && !urlAgentAccessError.value) {
+            postMessageToHost({
+              type: "CHAT_READY",
+              conversation_id: conversationId.value,
+            });
+          }
+        })
         .catch(e => console.error("[Init] History load failed:", e));
     }
   } catch (e) {
@@ -9744,6 +9827,8 @@ const fetchConversationHistory = async (
           .filter((receipt): receipt is UserQuestionReceipt => receipt !== null);
         applyUserQuestionReceipts(messages.value, historyReceipts);
       }
+      // 空历史也是加载成功；失败、取消或被新会话抢占则不返回成功标识。
+      return true;
     }
   } catch (e) {
     // 主动抢占/卸载时的取消不是错误，不刷告警。
@@ -11109,7 +11194,7 @@ const submitBusinessConfirmation = async (
 
 const submitUserQuestion = async (
   msg: Message,
-  payload: { selectedOptionIds: string[]; customInput: string; cancelled: boolean },
+  payload: { selectedOptionIds: string[]; customInput: string; cancelled: boolean; skipped?: boolean },
 ) => {
   const card = msg.userQuestion;
   if (!card || card.status !== "pending" || isProcessing.value) return;
@@ -11120,10 +11205,11 @@ const submitUserQuestion = async (
     payload.cancelled,
     card.question,
     card.options,
+    payload.skipped,
   );
   card.selected_option_ids = [...payload.selectedOptionIds];
   card.custom_input = payload.customInput;
-  card.status = payload.cancelled ? "cancelled" : "submitted";
+  card.status = payload.cancelled ? "cancelled" : payload.skipped ? "skipped" : "submitted";
   // 同步收尾时间线步骤，否则提交后该步骤仍显示「进行中」呼吸灯
   markUserQuestionTimelineResolved(msg.processTimeline, card.question_id);
   userInput.value = content;
@@ -12243,7 +12329,7 @@ onMounted(() => {
           // 补内容，绝不能顺手清掉本轮仍在途的草稿。
           const lastLocalUserIndex = (() => {
             for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-              if (messages.value[index].role === "user") return index;
+              if (messages.value[index]?.role === "user") return index;
             }
             return -1;
           })();
@@ -12265,7 +12351,7 @@ onMounted(() => {
         const latestTrace = String(latestServerItem?.trace_id || "");
         let lastLocalUserIndex = -1;
         for (let index = messages.value.length - 1; index >= 0; index -= 1) {
-          if (messages.value[index].role === "user") {
+          if (messages.value[index]?.role === "user") {
             lastLocalUserIndex = index;
             break;
           }
@@ -12282,7 +12368,7 @@ onMounted(() => {
           latestSyncedIndex > lastLocalUserIndex &&
           Boolean(latestServerItem?.query) &&
           Boolean(lastLocalUser) &&
-          String(lastLocalUser.content || "") === String(latestServerItem.query || "");
+          String(lastLocalUser?.content || "") === String(latestServerItem.query || "");
         if (latestSyncedIndex !== -1 && isLatestTurn) {
           if (activeStreamDraft) {
             finishRecoveredTurn();
@@ -12637,6 +12723,37 @@ onUnmounted(() => {
 }
 </style>
 <style scoped>
+/* 一览通原型外观为显式可选项，不修改普通嵌入页和Dashboard的样式。 */
+.ylt-host-layout {
+  --primary-color: #0b6eff;
+  background: #faf9f5;
+  color: #1f1e1d;
+}
+.ylt-host-layout .embed-message-area {
+  padding: 24px max(24px, calc((100% - 760px) / 2)) 28px;
+}
+.ylt-host-layout .embed-input-area {
+  padding: 10px max(16px, calc((100% - 800px) / 2)) 18px;
+  background: #faf9f5;
+}
+.ylt-chat-welcome {
+  max-width: 760px;
+  margin: 64px auto;
+  text-align: center;
+}
+.ylt-chat-welcome > span {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #1f1e1d;
+  color: #fff;
+  font-weight: 600;
+}
+.ylt-chat-welcome h2 { margin-top: 18px; font-size: 24px; font-weight: 600; }
+.ylt-chat-welcome p { margin-top: 12px; color: #8b857b; font-size: 14px; line-height: 1.8; }
+
 .slide-fade-enter-active,
 .slide-fade-leave-active {
   transition: all 0.2s ease-out;
