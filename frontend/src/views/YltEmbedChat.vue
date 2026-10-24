@@ -1,0 +1,13432 @@
+<template>
+  <div
+    class="flex h-full w-full max-w-full font-sans overflow-hidden relative min-w-0"
+    :class="config.theme === 'dark' ? 'dark bg-gray-900 text-gray-100' : 'bg-white text-gray-900'"
+  >
+    <!-- Sidebar (Desktop/Mobile) -->
+    <ChatHistorySidebar
+      v-model:visible="showHistorySidebar"
+      v-model="historyKeyword"
+      :loading="loadingHistory"
+      :loading-more="loadingMoreHistory"
+      :has-more="historyHasMore"
+      :history-list="groupedHistoryList"
+      :active-conversation-id="conversationId"
+      :running-conversation-ids="runningConversationIds"
+      :stale-conversation-ids="staleRunConversationIds"
+      :filters="historyFilters"
+      :available-agents="historyAgentOptions"
+      :show-agent-filter="showAgentFilter"
+      @update:filters="historyFilters = $event"
+      @reset-filters="resetHistoryFilters"
+      @fetch-history="fetchHistory()"
+      @load-more="fetchHistory(true)"
+      @load-chat="handleHistoryClick"
+      @open-full-logs="openTraceLogs"
+      @delete-history="handleDeleteSingleHistory"
+      @delete-group="handleDeleteGroup"
+      @new-chat="handleNewChatFromSidebar"
+      @export-chat="handleExportChatFromSidebar"
+      @toggle-pin="handleTogglePin"
+      class="border-r border-gray-200 dark:border-gray-800"
+    />
+
+    <!-- Persistent Global Watermark (Fixed position, now in background) -->
+    <div v-if="currentUser?.watermark ? currentUser.watermark.enabled : true" class="fixed inset-0 pointer-events-none overflow-hidden z-0 opacity-[0.04] select-none grid grid-cols-2 sm:grid-cols-3 gap-x-10 gap-y-24 p-10 justify-items-center items-center h-full w-full" aria-hidden="true">
+        <div v-for="n in 60" :key="n" class="text-[10px] sm:text-xs font-black -rotate-[30deg] whitespace-nowrap uppercase tracking-tighter">
+            <template v-if="currentUser?.watermark?.style === 'custom'">
+                {{ currentUser?.watermark?.text || branding.product_name }}
+            </template>
+            <template v-else>
+                {{ currentUser?.real_name || currentUser?.user_name || 'Unauthorized' }}
+            </template>
+            {{ new Date().toLocaleDateString() }} {{ new Date().getHours() }}:{{ String(new Date().getMinutes()).padStart(2, '0') }}
+        </div>
+    </div>
+
+    <div
+      class="flex-1 flex flex-col h-full relative z-10 min-w-0 transition-[margin] duration-300 overflow-hidden w-full max-w-full"
+      :style="pinnedDrawerMarginStyle"
+    >
+      <!-- 兼容模式提示：宿主通过 URL 直传 API Key（?token=），引导迁移到 Ticket 模式 -->
+      <Transition name="bash-banner-fade">
+        <div
+          v-if="showLegacyTokenHint"
+          class="flex-shrink-0 flex items-start justify-between gap-2 border-b border-amber-200 bg-amber-50/95 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-100"
+        >
+          <div class="flex items-start gap-2 min-w-0">
+            <span class="font-semibold shrink-0">⚠ 兼容模式</span>
+            <span class="text-amber-800/90 dark:text-amber-200/80 break-words">
+              检测到兼容模式接入，密钥存在泄露风险。请联系开发人员升级为 <strong>Ticket 模式</strong>。
+            </span>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              class="rounded px-1.5 py-0.5 text-amber-700/90 hover:text-amber-900 hover:bg-amber-100 dark:text-amber-300/80 dark:hover:bg-amber-900/40"
+              title="本次隐藏，刷新后仍会提示"
+              @click="dismissLegacyTokenHint"
+            >
+              关闭
+            </button>
+            <button
+              type="button"
+              class="rounded px-1.5 py-0.5 font-medium text-amber-700/90 hover:text-amber-900 hover:bg-amber-100 dark:text-amber-300/80 dark:hover:bg-amber-900/40"
+              title="该嵌入实例不再提示"
+              @click="ignoreLegacyTokenHint"
+            >
+              不再提示
+            </button>
+          </div>
+        </div>
+      </Transition>
+
+      <!-- Dynamic Header Status (New) -->
+      <div
+        class="h-12 border-b border-gray-100 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md px-4 flex items-center justify-between z-30 flex-shrink-0"
+      >
+        <div class="flex items-center space-x-2 min-w-0">
+          <div class="relative group inline-flex items-center flex-shrink-0">
+            <button
+              type="button"
+              data-tour="history-toggle"
+              @click="showHistorySidebar = !showHistorySidebar"
+              class="p-1.5 -ml-1 text-gray-500 dark:text-gray-400 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors flex-shrink-0"
+              :class="{ 'text-primary bg-primary/10': showHistorySidebar }"
+              aria-label="历史会话"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="18" height="18" rx="3" stroke-width="1.8" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 3v18" />
+              </svg>
+            </button>
+            <div class="pointer-events-none absolute top-full left-0 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-start z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+              <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 ml-2.5 -mb-0.5"></div>
+              <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                {{ showHistorySidebar ? '收起会话历史 (⌘H)' : '展开会话历史 (⌘H)' }}
+              </div>
+            </div>
+          </div>
+          <!-- 不能加 overflow-hidden：副标题行里挂着「进行中的会话」浮层（absolute 定位），
+               祖先裁剪会让浮层整块不可见（表现为点了没反应）。文字截断由各行 span
+               自己的 truncate 负责。 -->
+          <div data-tour="header-status" class="flex flex-col min-w-0">
+                <div class="flex items-center space-x-1.5 leading-tight">
+                    <span class="text-[13px] font-semibold text-gray-800 dark:text-gray-100 truncate">
+                        <template v-if="isProcessing">
+                            {{ lastAgentMessage?.agentDisplayName || lastAgentMessage?.agentName || '智能体' }}
+                        </template>
+                        <template v-else-if="headerExpertLabel">
+                            {{ headerExpertLabel }}
+                        </template>
+                        <template v-else>
+                            {{ branding.default_agent_name || 'NanZi · AI' }}
+                        </template>
+                    </span>
+                    <!-- 锁定徽章原本与状态点靠 v-if / v-else-if 二选一；点移到副标题行后，
+                         互斥条件必须显式写出来，否则生成中会同时出现徽章和状态点。 -->
+                    <span
+                        v-if="headerExpertLabel && !isProcessing"
+                        class="inline-flex items-center px-1.5 py-0.2 rounded-full bg-primary/10 text-primary text-[9px] font-semibold uppercase tracking-wider shrink-0"
+                    >
+                        锁定
+                    </span>
+                </div>
+                <div class="text-[11px] text-gray-400 dark:text-gray-500 flex items-center gap-1.5 min-w-0 leading-tight mt-0.5">
+                    <template v-if="isProcessing">
+                        <!-- 状态点贴在状态描述前（用户要求）：它修饰的是「这个状态正在发生」，
+                             而不是主标题的装饰。 -->
+                        <span class="flex h-1.5 w-1.5 relative shrink-0">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary"></span>
+                        </span>
+                        <span class="truncate">正在处理您的请求...</span>
+                    </template>
+                    <template v-else-if="headerExpertLabel">
+                        <span class="normal-case tracking-normal truncate">准备就绪</span>
+                        <button
+                            v-if="!isRoutingSettingsLocked"
+                            type="button"
+                            @click.stop="switchToAuto"
+                            class="text-gray-400 hover:text-red-500 normal-case tracking-normal font-medium transition-colors shrink-0"
+                        >
+                            退出
+                        </button>
+                    </template>
+                    <template v-else>
+                        <span class="truncate">准备就绪</span>
+                    </template>
+                    <!-- 进行中的会话：挂在副标题后面（不占右侧按钮组），角标提示还有几个会话在跑。
+                         注意本行**不能**再用 truncate——overflow:hidden 会把下面的浮层裁掉，
+                         桌面与移动端**共用**这一个入口：移动端原本单独占一个 44px 按钮，
+                         与同样 44px 的「更多」并排，16px 图标被两圈 padding 撑出约 36px
+                         视觉空白，看起来「离得远」，因此并进副标题行。
+                         文字截断交给上面各 span 自己处理。 -->
+                    <div ref="activeRunsRef" class="relative inline-flex shrink-0">
+                        <button
+                            type="button"
+                            class="relative -my-0.5 rounded p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary dark:hover:bg-gray-800"
+                            :class="showActiveRuns ? 'bg-primary/10 text-primary' : ''"
+                            :aria-label="activeRunsAriaLabel"
+                            :aria-expanded="showActiveRuns"
+                            @click="toggleActiveRuns"
+                        >
+                            <template v-if="activeRunsCount">
+                                <!-- 有会话在跑：Loader 旋转，用动效表达「正在运行」。 -->
+                                <svg class="h-3.5 w-3.5 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 12a9 9 0 1 1-6.219-8.56" />
+                                </svg>
+                            </template>
+                            <template v-else>
+                                <!-- 空闲：Radio 信号波，静态。 -->
+                                <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5" />
+                                <circle cx="12" cy="12" r="2" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.1 4.9C23 8.8 23 15.1 19.1 19" />
+                                </svg>
+                            </template>
+                            <span
+                                v-if="activeRunsCount"
+                                class="absolute -right-1 -top-1 flex h-3.5 min-w-[0.875rem] items-center justify-center rounded-full px-0.5 text-[8px] font-semibold leading-none text-white ring-1 ring-white dark:ring-gray-900"
+                                :class="activeRunsStaleCount ? 'bg-amber-500' : 'bg-primary'"
+                            >
+                                {{ activeRunsCount > 99 ? '99+' : activeRunsCount }}
+                            </span>
+                        </button>
+                        <ActiveRunsPopover
+                            :open="showActiveRuns"
+                            :items="activeRunViews"
+                            :loading="activeRunsLoading"
+                            :failed="activeRunsFailed"
+                            :active-conversation-id="conversationId"
+                            align="left"
+                            @select="handleActiveRunSelect"
+                            @terminate="handleActiveRunTerminate"
+                            @refresh="refreshActiveRuns"
+                            @close="showActiveRuns = false"
+                            @open-history="handleActiveRunsOpenHistory"
+                        />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div data-tour="header-actions" class="flex items-center space-x-2">
+            <!-- Fullscreen Button (desktop only) -->
+            <div v-if="!isMobile" class="relative group inline-flex items-center">
+              <button
+                @click="toggleFullScreen"
+                class="p-2 text-gray-400 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-all"
+                :aria-label="isFullScreen ? '退出全屏' : '全屏模式'"
+              >
+                <svg v-if="!isFullScreen" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                </svg>
+                <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 14h6v6m0-6l-6 6m16-6h-6v6m0-6l6 6M4 10h6V4m0 6L4 4m16 6h-6V4m0 6l6-6" />
+                </svg>
+              </button>
+              <div class="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-center z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 -mb-0.5"></div>
+                <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                  {{ isFullScreen ? '退出全屏' : '全屏模式' }}
+                </div>
+              </div>
+            </div>
+
+            <!-- Shortcuts Button（移动端收进「更多」弹层；桌面端仅在
+                 config.showShortcuts 关闭时作为重新打开的入口出现） -->
+            <div v-if="!isMobile" class="relative group inline-flex items-center">
+              <button
+                v-if="!config.showShortcuts"
+                @click="handleHeaderShortcutsClick"
+                class="p-2 text-gray-400 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-all"
+                :class="{ 'text-primary bg-primary/10': showShortcutsHint }"
+                aria-label="显示快捷指令"
+              >
+                <CommandLineIcon class="h-4 w-4" aria-hidden="true" />
+              </button>
+              <div v-if="!showShortcutsHint && !config.showShortcuts" class="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-center z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 -mb-0.5"></div>
+                <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                  显示快捷指令
+                </div>
+              </div>
+
+              <!-- 折叠快捷指令后的右上角气泡引导提示 -->
+              <transition
+                enter-active-class="transition-all duration-300 ease-out"
+                enter-from-class="opacity-0 -translate-y-2 scale-95"
+                enter-to-class="opacity-100 translate-y-0 scale-100"
+                leave-active-class="transition-all duration-200 ease-in"
+                leave-from-class="opacity-100 translate-y-0 scale-100"
+                leave-to-class="opacity-0 -translate-y-1 scale-95"
+              >
+                <div
+                  v-if="showShortcutsHint && !config.showShortcuts"
+                  class="absolute right-0 top-full mt-2.5 z-50 flex items-center gap-2.5 whitespace-nowrap rounded-xl border border-primary/20 bg-primary/95 px-3 py-2 text-[12px] text-white shadow-2xl backdrop-blur-md dark:border-slate-700/60 dark:bg-slate-900/95 pointer-events-auto"
+                >
+                  <!-- 顶部小尖角 -->
+                  <div class="absolute -top-1.5 right-3 h-3 w-3 rotate-45 border-l border-t border-primary/20 bg-primary/95 dark:border-slate-700/60 dark:bg-slate-900/95" />
+
+                  <CommandLineIcon class="h-4 w-4 shrink-0 text-white" aria-hidden="true" />
+                  <div class="flex flex-col text-left">
+                    <span class="font-bold leading-tight">已折叠快捷指令</span>
+                    <span class="text-[11px] text-white/85 dark:text-slate-300 leading-tight mt-0.5">下次点这里重新打开</span>
+                  </div>
+                  <button
+                    type="button"
+                    @click.stop="dismissShortcutsHint"
+                    class="ml-1 rounded-md p-1 text-white/70 hover:text-white hover:bg-white/20 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800 transition-colors"
+                    title="知道了"
+                  >
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </transition>
+            </div>
+
+            <!-- Help Button（桌面端按钮；移动端收进「更多」弹层） -->
+            <div v-if="!isMobile" class="relative group inline-flex items-center">
+              <button
+                @click="showHelpModal = true"
+                class="p-2 text-gray-400 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-all"
+                aria-label="查看帮助"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+              <div class="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-center z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 -mb-0.5"></div>
+                <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                  查看帮助
+                </div>
+              </div>
+            </div>
+
+            <!-- Settings Button（桌面端按钮；移动端收进「更多」弹层） -->
+            <div v-if="!isMobile" class="relative group inline-flex items-center">
+              <button
+                @click="showSettings = true"
+                class="relative p-2 text-gray-400 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-all"
+                :class="config.enableGrounding ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50/50 dark:bg-emerald-950/20' : ''"
+                :aria-label="config.enableGrounding ? '对话设置 (反幻觉校验已开启)' : '对话设置'"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                <span v-if="config.enableGrounding" class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-gray-800" />
+              </button>
+              <div class="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-center z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 -mb-0.5"></div>
+                <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                  {{ config.enableGrounding ? '对话设置 (反幻觉校验已开启)' : '对话设置' }}
+                </div>
+              </div>
+            </div>
+
+            <!-- Server Browser Button（桌面端按钮；移动端收进「更多」弹层） -->
+            <div v-if="!isMobile" class="relative group inline-flex items-center">
+              <button
+                @click="toggleBrowserPanel"
+                class="relative p-2 text-gray-400 hover:text-primary hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-all"
+                :class="browserPanelVisible ? 'text-primary bg-primary/10' : ''"
+                aria-label="打开服务端浏览器"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" stroke-width="1.8"/><path stroke-linecap="round" stroke-width="1.8" d="M3 8h18M7 6h.01M10 6h.01"/></svg>
+                <span v-if="browserPanelVisible" class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              </button>
+              <div class="pointer-events-none absolute top-full right-0 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-end z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 mr-3 -mb-0.5"></div>
+                <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                  打开服务端浏览器
+                </div>
+              </div>
+            </div>
+
+            <!-- 移动端「更多」：锚定弹层（与输入区「+」弹层同形态，不用底部抽屉）。
+                 min-h-11/min-w-11 = 44px，满足移动端触控热区下限。 -->
+            <div v-if="isMobile" ref="headerMoreRef" class="relative inline-flex items-center">
+              <button
+                type="button"
+                @click="toggleHeaderMore"
+                class="relative flex min-h-11 min-w-11 items-center justify-center rounded-lg transition-all hover:bg-gray-100 hover:text-primary dark:hover:bg-gray-800"
+                :class="showHeaderMore ? 'text-primary bg-gray-100 dark:bg-gray-700' : 'text-gray-400'"
+                aria-haspopup="menu"
+                :aria-expanded="showHeaderMore"
+                :aria-label="headerMoreBadge ? '更多（有新状态）' : '更多'"
+              >
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <circle cx="12" cy="5" r="1.5" />
+                  <circle cx="12" cy="12" r="1.5" />
+                  <circle cx="12" cy="19" r="1.5" />
+                </svg>
+                <span v-if="headerMoreBadge" class="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-gray-800" />
+              </button>
+
+              <transition
+                enter-active-class="transition ease-out duration-100"
+                enter-from-class="transform opacity-0 scale-95"
+                enter-to-class="transform opacity-100 scale-100"
+                leave-active-class="transition ease-in duration-75"
+                leave-from-class="transform opacity-100 scale-100"
+                leave-to-class="transform opacity-0 scale-95"
+              >
+                <div v-if="showHeaderMore" class="absolute top-full right-0 z-50 mt-2 origin-top-right">
+                  <div class="w-52 rounded-xl border border-gray-200 bg-white py-1.5 shadow-xl dark:border-gray-700 dark:bg-gray-800">
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-3 px-3 py-2 text-sm text-gray-700 transition-all duration-150 hover:bg-primary/10 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/20"
+                      @click="runHeaderMoreSettings"
+                    >
+                      <svg class="h-5 w-5 shrink-0 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                      <span class="flex-1 text-left font-medium">对话设置</span>
+                      <span v-if="config.enableGrounding" class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+                    </button>
+
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-3 px-3 py-2 text-sm text-gray-700 transition-all duration-150 hover:bg-primary/10 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/20"
+                      @click="runHeaderMoreShortcuts"
+                    >
+                      <CommandLineIcon class="h-5 w-5 shrink-0 text-indigo-500" aria-hidden="true" />
+                      <span class="flex-1 text-left font-medium">快捷指令</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-3 px-3 py-2 text-sm text-gray-700 transition-all duration-150 hover:bg-primary/10 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/20"
+                      @click="runHeaderMoreHelp"
+                    >
+                      <svg class="h-5 w-5 shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <span class="flex-1 text-left font-medium">查看帮助</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-3 px-3 py-2 text-sm text-gray-700 transition-all duration-150 hover:bg-primary/10 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/20"
+                      @click="runHeaderMoreBrowser"
+                    >
+                      <svg class="h-5 w-5 shrink-0 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" stroke-width="1.8"/><path stroke-linecap="round" stroke-width="1.8" d="M3 8h18M7 6h.01M10 6h.01"/></svg>
+                      <span class="flex-1 text-left font-medium">服务端浏览器</span>
+                      <span v-if="browserPanelVisible" class="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+                    </button>
+
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-3 px-3 py-2 text-sm text-gray-700 transition-all duration-150 hover:bg-primary/10 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/20"
+                      @click="runHeaderMoreActiveRuns"
+                    >
+                      <template v-if="activeRunsCount"><svg class="h-5 w-5 shrink-0 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 12a9 9 0 1 1-6.219-8.56" /></svg></template><template v-else><svg class="h-5 w-5 shrink-0 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5" />
+<circle cx="12" cy="12" r="2" />
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5" />
+<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.1 4.9C23 8.8 23 15.1 19.1 19" />
+</svg></template>
+                      <span class="flex-1 text-left font-medium">进行中的会话</span>
+                      <span v-if="activeRunsCount" class="shrink-0 rounded-full px-1.5 text-[10px] font-semibold text-white" :class="activeRunsStaleCount ? 'bg-amber-500' : 'bg-primary'">{{ activeRunsCount > 99 ? '99+' : activeRunsCount }}</span>
+                    </button>
+
+                    <!-- 账号类入口用分隔线与上面的「功能」区分开 -->
+                    <button
+                      type="button"
+                      class="flex w-full items-center gap-3 border-t border-gray-100 px-3 py-2 text-sm text-gray-700 transition-all duration-150 hover:bg-primary/10 hover:text-primary dark:border-gray-700 dark:text-gray-200 dark:hover:bg-primary/20"
+                      @click="runHeaderMoreAccount"
+                    >
+                      <svg class="h-5 w-5 shrink-0 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
+                      <span class="flex-1 text-left font-medium">我的账号</span>
+                    </button>
+                  </div>
+                </div>
+              </transition>
+            </div>
+        </div>
+      </div>
+
+      <SessionResourceScopeBar
+        v-if="resourceScope.project_name || resourceScopeCount > 0"
+        :project-name="resourceScope.project_name"
+        :resource-count="resourceScopeCount"
+        :dataset-count="resourceScope.datasets.length"
+        :knowledge-base-count="resourceScope.knowledge_bases.length"
+        :skill-count="resourceScope.skills.length"
+        :mcp-count="resourceScope.mcp_tools.length"
+        @manage="openResourceScopeModal"
+      />
+
+      <!-- Main Chat Area -->
+      <div
+        class="flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-4 pt-3 sm:pt-4 pb-1 sm:pb-1.5 space-y-4 sm:space-y-6 w-full max-w-full min-w-0"
+        ref="messagesContainer"
+        @scroll="handleScroll"
+      >
+      <!-- Connection Status Overlay -->
+      <div
+        v-if="connectionStatus !== 'connected'"
+        class="fixed top-0 left-0 right-0 z-50 flex justify-center p-2"
+      >
+        <div
+          class="px-3 py-1 rounded-full text-xs font-medium shadow-sm transition-colors duration-300"
+          :class="{
+            'bg-yellow-100 text-yellow-800':
+              connectionStatus === 'reconnecting',
+            'bg-red-100 text-red-800': connectionStatus === 'disconnected',
+          }"
+        >
+          {{
+            connectionStatus === "reconnecting" ? "正在重连..." : "连接已断开"
+          }}
+        </div>
+      </div>
+      <!-- Skeleton Loading State -->
+      <div v-if="isInitialLoading" class="space-y-6">
+        <div v-for="i in 3" :key="i" class="flex items-start space-x-3">
+          <div
+            class="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 animate-pulse"
+          ></div>
+          <div class="flex-1 space-y-2">
+            <div
+              class="h-4 bg-gray-100 dark:bg-gray-800 rounded w-3/4 animate-pulse"
+            ></div>
+            <div
+              class="h-4 bg-gray-50 dark:bg-gray-800/50 rounded w-1/2 animate-pulse"
+            ></div>
+          </div>
+        </div>
+        <div class="flex flex-col items-center justify-center pt-8 animate-pulse">
+            <span class="text-[10px] font-bold text-gray-300 uppercase tracking-widest mb-2">正在安全同步环境上下文</span>
+            <div class="flex space-x-1">
+                <div class="w-1 h-1 bg-gray-200 rounded-full animate-bounce"></div>
+                <div class="w-1 h-1 bg-gray-200 rounded-full animate-bounce [animation-delay:0.2s]"></div>
+                <div class="w-1 h-1 bg-gray-200 rounded-full animate-bounce [animation-delay:0.4s]"></div>
+            </div>
+        </div>
+      </div>
+      <!-- Welcome / Empty State (Smart Dashboard) -->
+      <WelcomeDashboard
+        v-else-if="messages.length === 0"
+        :welcome-message="config.welcomeMessage"
+        :slash-commands="effectiveSlashCommands"
+        :welcome-cards="welcomeCards"
+        :personal-resources="welcomePersonalResources"
+        :personal-resources-refreshing="workbenchHomeRefreshing"
+        @quick-question="handleQuickQuestion"
+        @open-data-portal="openPortalDrawer"
+        @open-personal-resources="openPersonalResources"
+        @refresh-personal-resources="refreshWelcomePersonalResources"
+        @select-knowledge-base="openKnowledgePortal"
+        @open-workspace="openWorkspaceDrawer"
+      />
+      <!-- 小程序宿主：已授权智能体为空时的兜底（浏览器/iframe 既有行为不受影响） -->
+      <p
+        v-if="isMiniprogramHost() && !isLoadingAgents && allowedAgents.length === 0"
+        class="text-sm text-gray-500 dark:text-gray-400 text-center px-4 py-4"
+      >{{ MINIPROGRAM_NO_AGENT_HINT }}</p>
+      <!-- Start of Conversation Indicator -->
+      <div v-if="!hasMoreHistory && messages.length > 0" class="w-full flex flex-col items-center py-8 opacity-60">
+        <div class="w-8 h-8 rounded-full bg-gray-50 dark:bg-gray-800 flex items-center justify-center mb-2 border border-gray-100 dark:border-gray-700">
+           <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+           </svg>
+        </div>
+        <span class="text-[11px] font-bold text-gray-400 uppercase tracking-widest">这是您对话的起点</span>
+        <div class="w-12 h-[1px] bg-gradient-to-r from-transparent via-gray-200 dark:via-gray-700 to-transparent mt-2"></div>
+      </div>
+      <!-- History Loading Indicator -->
+      <div v-if="isLoadingHistory" class="w-full flex justify-center py-4 animate-fade-in-up">
+        <div class="flex items-center gap-2 bg-gray-50/90 dark:bg-gray-800/90 px-4 py-1.5 rounded-full border border-gray-100 dark:border-gray-700 shadow-sm backdrop-blur-sm">
+            <svg class="w-4 h-4 text-primary animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span class="text-xs font-medium text-gray-500 dark:text-gray-400">正在加载历史记录...</span>
+        </div>
+      </div>
+      <!-- Message List -->
+      <div
+        v-for="msg in displayMessages"
+        :key="msg.id"
+        class="flex flex-col space-y-4 animate-fade-in-up"
+      >
+        <!-- Time Label -->
+        <div v-if="msg.isTimeLabel" class="flex justify-center py-2 animate-fade-in">
+             <span class="text-[10px] font-medium text-gray-400 bg-gray-50 dark:bg-gray-800/80 px-2.5 py-0.5 rounded-full border border-gray-100 dark:border-gray-700 select-none">
+                {{ msg.content }}
+             </span>
+        </div>
+        <!-- User Message -->
+        <div
+          v-if="!msg.isTimeLabel && checkRole(msg, 'user')"
+          class="flex flex-col group/msg relative"
+        >
+          <!-- Editing Mode -->
+          <div v-if="editingMsgId === msg.id" class="flex flex-col items-end space-y-2 max-w-[90%] self-end">
+             <textarea
+                v-model="editContent"
+                class="w-full p-3 border border-primary/30 rounded-lg shadow-sm focus:ring-2 focus:ring-primary focus:border-primary text-sm min-h-[80px] bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+              ></textarea>
+              <div class="flex space-x-2">
+                <button
+                  @click="cancelEdit"
+                  class="px-3 py-1 text-xs text-gray-500 bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 rounded"
+                >取消</button>
+                <button
+                  @click="saveAndResend"
+                  class="px-3 py-1 text-xs text-white bg-primary hover:opacity-90 rounded"
+                  :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
+                >发送</button>
+              </div>
+          </div>
+          <!-- Normal Mode -->
+          <div v-else>
+            <div class="flex justify-end items-start space-x-2">
+              <div
+                class="max-w-[85%] text-white px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm text-sm leading-relaxed transition-colors duration-300 relative"
+                :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
+              >
+                <template v-for="parts in [splitUserMessageContent(msg.content)]" :key="'user-parts'">
+                  <template v-if="parts.hasContext">
+                    <div v-if="parts.userPart" class="whitespace-pre-wrap">{{ parts.userPart }}</div>
+                    <div v-if="parts.userPart" class="my-2.5 border-t border-white/30" role="separator" />
+                    <details class="group/sys mt-2 text-[10px] text-white/70 select-none">
+                      <summary class="cursor-pointer hover:text-white flex items-center gap-1 font-semibold focus:outline-none list-none [&::-webkit-details-marker]:hidden">
+                        <svg class="w-3 h-3 transform transition-transform duration-200 group-open/sys:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
+                        </svg>
+                        <span>⚙️ 附加系统元数据说明 (点击展开)</span>
+                      </summary>
+                      <div class="mt-1.5 p-2 rounded bg-black/15 text-white/85 font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-all select-text selection:bg-white/20">
+                        {{ parts.contextPart }}
+                      </div>
+                    </details>
+                  </template>
+                  <div v-else class="whitespace-pre-wrap">{{ msg.content }}</div>
+                </template>
+
+                <!-- Attached Files In Bubble -->
+                <div v-if="msg.files && msg.files.length > 0" class="mt-2 space-y-2 border-t border-white/20 pt-2">
+                    <div v-for="(file, fIdx) in msg.files" :key="fIdx" class="flex items-center bg-white/10 rounded-lg p-1.5 max-w-xs select-none">
+                        <!-- Image Thumb -->
+                        <AttachmentImageThumb
+                          v-if="isImageFile(file)"
+                          :file="file"
+                          clickable
+                          class="mr-2 border-white/10"
+                          @click="(url) => handlePreviewImageUrl(url, file.filename)"
+                        />
+                        <!-- Skill Icon -->
+                        <div v-else-if="file.type === 'skill'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2 font-mono">
+                            ⚙️
+                        </div>
+                        <!-- Metadata Dataset Icon -->
+                        <div v-else-if="file.type === 'metadata_dataset'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
+                            📊
+                        </div>
+                        <!-- Knowledge Base Icon -->
+                        <div v-else-if="file.type === 'knowledge_base'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
+                            📚
+                        </div>
+                        <!-- Memory Icon -->
+                        <div v-else-if="file.type === 'memory'" class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
+                            🧠
+                        </div>
+                        <!-- File Icon -->
+                        <div v-else class="w-8 h-8 rounded bg-white/20 flex items-center justify-center text-white text-sm flex-shrink-0 mr-2">
+                            📄
+                        </div>
+                        <div class="flex-1 min-w-0 flex flex-col">
+                            <span v-if="file.type === 'skill' || file.type === 'knowledge_base' || file.type === 'metadata_dataset' || file.type === 'memory'" class="text-xs font-bold text-white truncate">{{ file.filename }}</span>
+                            <template v-else>
+                              <span v-if="canPreviewFile(file)" @click="handlePreviewFile(file)" class="text-xs font-bold text-white hover:underline cursor-pointer truncate">{{ file.filename }}</span>
+                              <a v-else :href="resolveFileUrl(file.url)" target="_blank" class="text-xs font-bold text-white hover:underline truncate">{{ file.filename }}</a>
+                            </template>
+                            <span class="text-[9px] text-white/70 font-mono">
+                                {{
+                                    file.type === 'skill' ? '生态技能' :
+                                    file.type === 'knowledge_base' ? '知识库' :
+                                    file.type === 'metadata_dataset' ? '数据集' :
+                                    file.type === 'memory' ? '记忆记录' :
+                                    formatBytes(file.size)
+                                }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+              </div>
+              <!-- User Avatar -->
+              <div
+                class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white shadow-sm overflow-hidden border border-white dark:border-gray-800"
+                :style="{
+                  background: config.userAvatar
+                    ? `url(${config.userAvatar}) center/cover no-repeat`
+                    : 'linear-gradient(135deg, #60a5fa, #3b82f6)',
+                }"
+              >
+                <svg
+                  v-if="!config.userAvatar"
+                  class="w-5 h-5 opacity-90"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                  />
+                </svg>
+              </div>
+            </div>
+            <!-- User Message Actions Row -->
+            <div
+              class="flex justify-end items-center space-x-2 mt-1 pr-10"
+            >
+              <!-- Actions -->
+              <div class="flex flex-nowrap items-center space-x-2">
+              <button
+                @click="startEdit(msg)"
+                class="flex shrink-0 items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="编辑"
+                :disabled="isProcessing"
+              >
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+                <span class="hidden sm:inline">编辑</span>
+              </button>
+              <button
+                @click="copyMessage(visibleStreamBody(msg))"
+                class="flex shrink-0 items-center space-x-1 text-[10px] text-gray-400 hover:text-primary transition-colors rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                :class="windowWidth < 640 ? 'p-2.5' : 'px-1.5 py-0.5'"
+                title="复制"
+              >
+                <svg
+                  class="w-3 h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                  />
+                </svg>
+                <span class="hidden sm:inline">复制</span>
+              </button>
+              <!-- Time -->
+              <span v-if="msg.timestamp" class="text-[10px] text-gray-400 dark:text-gray-500 select-none ml-1 whitespace-nowrap shrink-0">{{ formatBubbleTime(msg.timestamp) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- System Message / Separator -->
+        <div
+          v-if="!msg.isTimeLabel && checkRole(msg, 'system')"
+          class="w-full flex flex-col items-center justify-center my-6"
+        >
+          <span
+            v-if="msg.timestamp"
+            class="text-xs text-gray-400 dark:text-gray-500 font-medium tracking-wide mb-2"
+            >{{ msg.timestamp }}</span
+          >
+          <div class="flex items-center space-x-2 opacity-60">
+            <div class="h-px w-12 bg-gray-300 dark:bg-gray-600"></div>
+            <span
+              class="text-[10px] text-gray-400 dark:text-gray-500 font-medium tracking-wide"
+              >{{ msg.content }}</span
+            >
+            <div class="h-px w-12 bg-gray-300 dark:bg-gray-600"></div>
+          </div>
+        </div>
+        <!-- Agent Message -->
+        <div v-if="!msg.isTimeLabel && checkRole(msg, 'agent')" class="flex justify-start items-start space-x-2 group/msg">
+          <!-- Agent Avatar (Clickable for Settings) -->
+          <div class="relative group">
+            <!-- Pulse/Glow Effect -->
+            <div
+              class="absolute inset-0 rounded-full animate-pulse-slow transition-opacity"
+              :class="(!msg.agentName || msg.isThinking) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+              :style="{
+                backgroundColor: 'var(--primary-color, #1677ff)',
+                filter: 'blur(4px)',
+              }"
+            ></div>
+            <div
+              class="relative w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white shadow-sm overflow-hidden cursor-pointer hover:scale-110 hover:shadow-md active:scale-95 transition-all duration-200"
+              @click.stop="showSettings = true; fetchAllowedAgents()"
+              title="点击配置主题"
+            >
+              <img
+                :src="msgAvatarSrc(msg) || agentAvatarUrl"
+                class="w-full h-full object-cover"
+                alt="NanZi AI agent"
+                @error="handleAgentAvatarError"
+              />
+            </div>
+            <!-- Tiny indicator dot to pulse when NOT hovered -->
+            <div
+              class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-green-400 border-2 border-white dark:border-gray-900 rounded-full group-hover:hidden"
+            >
+              <div
+                class="absolute inset-0 rounded-full animate-ping bg-green-400 opacity-75"
+              ></div>
+            </div>
+          </div>
+          <div class="w-full max-w-[90%] min-w-0">
+            <!-- Agent Name (Smart Status Capsule) -->
+            <div class="mb-1 ml-1 flex items-center">
+              <div
+                class="flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-all duration-300 ease-out border"
+                :class="msg.agentName || msg.agentDisplayName
+                  ? 'bg-gray-50/90 dark:bg-gray-800/80 border-gray-200/70 dark:border-gray-700/70 text-gray-700 dark:text-gray-300 shadow-[0_1px_2px_rgba(0,0,0,0.02)] opacity-100 translate-y-0'
+                  : msg.isThinking
+                    ? 'bg-gray-50/70 border-gray-200/50 text-gray-400 dark:bg-gray-800/50 dark:border-gray-700/50 dark:text-gray-500 opacity-100 translate-y-0'
+                  : 'opacity-0 translate-y-1 bg-transparent border-transparent'"
+              >
+                <!-- Text：调度占位（三点跳动）→ 智能体名（淡入轻微上滑） -->
+                <Transition name="slide-fade" mode="out-in">
+                  <span
+                    v-if="msg.agentDisplayName || msg.agentName"
+                    :key="`agent-${msg.agentDisplayName || msg.agentName}`"
+                    class="inline-flex items-center space-x-1.5"
+                  >
+                    <span class="w-1.5 h-1.5 rounded-full bg-primary/70 shrink-0"></span>
+                    <span class="text-gray-800 dark:text-gray-200 font-medium">{{ msg.agentDisplayName || msg.agentName }}</span>
+                    <span v-if="msg.agentName" class="text-gray-400 dark:text-gray-500 font-normal">{{ String(msg.agentName || '').startsWith('sys_') ? '· 系统指令' : '· 为您服务' }}</span>
+                  </span>
+                  <span v-else key="dispatch-placeholder" class="inline-flex items-center text-gray-400 dark:text-gray-500">
+                    <span class="w-1.5 h-1.5 rounded-full bg-gray-300 dark:bg-gray-600 animate-pulse shrink-0 mr-1.5"></span>
+                    智能体正在分配调度中
+                    <span class="inline-flex ml-0.5" aria-hidden="true">
+                      <span class="animate-bounce-dot font-bold" style="animation-delay: 0s">.</span>
+                      <span class="animate-bounce-dot font-bold" style="animation-delay: 0.15s">.</span>
+                      <span class="animate-bounce-dot font-bold" style="animation-delay: 0.3s">.</span>
+                    </span>
+                  </span>
+                </Transition>
+              </div>
+            </div>
+            <div
+              class="text-sm leading-relaxed transition-all duration-300 relative group/bubble"
+              :class="[
+                `markdown-theme-${config.markdownTheme || 'default'}`,
+                { 'message-borderless': config.hideMessageBorder },
+                visibleStreamBody(msg) || msg.groundingBlocked || msg.businessConfirmation || msg.userQuestion || (msg.processTimeline && msg.processTimeline.length > 0)
+                  ? [
+                      'px-4 py-3 rounded-2xl rounded-tl-sm shadow-none border border-gray-100 dark:border-gray-700 border-l-4 border-l-primary/60 dark:border-l-primary/40 min-h-[46px]',
+                      msg.isThinking
+                        ? 'bg-slate-50/80 dark:bg-slate-800/80'
+                        : 'bg-white dark:bg-gray-800',
+                    ]
+                  : 'min-h-0 bg-transparent',
+              ]"
+            >
+              <ReusableResultNotice
+                v-if="msg.reusableResultStatus?.status === 'reused'"
+                :origin-name="msg.reusableResultStatus.originName"
+              />
+              <ChatExecutionTimeline
+                v-model="msg.isThoughtExpanded"
+                :timeline="msg.processTimeline"
+                :logs="msg.logs"
+                :reasoning-content="msg.reasoningContent"
+                :process-narration="msg.processNarration"
+                :process-narration-pending="msg.processNarrationPending"
+                :is-thinking="msg.isThinking"
+                :has-answer="Boolean(visibleStreamBody(msg))"
+                :thinking-text="msg.thinkingText"
+                :duration="msg.thoughtDuration"
+                :skill-summary="getSkillFlowBadgesForMessage(msg, messages).length > 0 ? summarizeSkillFlowBadges(getSkillFlowBadgesForMessage(msg, messages)) : ''"
+                :skill-badges="getSkillFlowBadgesForMessage(msg, messages)"
+                :suppress-permission-logs="Boolean(msg.pendingPermission)"
+                dark-mode
+                @stop="stopGeneration({ notifySuccess: true })"
+              />
+              <ToolPermissionCard
+                v-if="msg.pendingPermission"
+                :payload="msg.pendingPermission"
+                @submit="(confirmed) => confirmPendingPermission(msg, confirmed)"
+              />
+              <!-- External Tool Execution -->
+              <div
+                v-if="msg.pendingExternalExecution"
+                class="mt-3 rounded-lg border border-sky-200 dark:border-sky-900/50 bg-sky-50/80 dark:bg-sky-900/20 p-3 text-xs transition-all"
+              >
+                <div class="flex items-start gap-2">
+                  <div class="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <!-- Card Header with Toggle -->
+                    <div
+                      class="flex items-center justify-between gap-2 cursor-pointer select-none group"
+                      :title="(msg.pendingExternalExecution.expanded ?? (msg.pendingExternalExecution.status === 'pending')) ? '点击收起' : '点击展开'"
+                      @click="msg.pendingExternalExecution.expanded = !(msg.pendingExternalExecution.expanded ?? (msg.pendingExternalExecution.status === 'pending'))"
+                    >
+                      <div class="flex min-w-0 flex-1 items-center gap-2">
+                        <div class="font-bold text-sky-900 dark:text-sky-100 shrink-0">
+                          {{ msg.pendingExternalExecution.title || '外部工具执行' }}
+                        </div>
+                        <!-- Collapsed summary preview -->
+                        <span
+                          v-if="!(msg.pendingExternalExecution.expanded ?? (msg.pendingExternalExecution.status === 'pending')) && (msg.pendingExternalExecution.tool_call?.name || msg.pendingExternalExecution.details)"
+                          class="min-w-0 flex-1 truncate text-[11px] text-sky-800/70 dark:text-sky-200/70 font-normal"
+                        >
+                          {{ msg.pendingExternalExecution.tool_call?.name ? `${msg.pendingExternalExecution.tool_call.name}${msg.pendingExternalExecution.tool_call.args ? ': ' + JSON.stringify(msg.pendingExternalExecution.tool_call.args) : ''}` : msg.pendingExternalExecution.details }}
+                        </span>
+                      </div>
+                      <div class="flex items-center gap-1.5 shrink-0">
+                        <span class="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">
+                          {{ formatExternalExecutionStatus(msg.pendingExternalExecution.status) }}
+                        </span>
+                        <!-- Fold/Unfold Arrow -->
+                        <button
+                          type="button"
+                          class="flex h-5 w-5 items-center justify-center rounded text-sky-600 hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-200 transition-colors"
+                          :aria-label="(msg.pendingExternalExecution.expanded ?? (msg.pendingExternalExecution.status === 'pending')) ? '收起执行' : '展开执行'"
+                          @click.stop="msg.pendingExternalExecution.expanded = !(msg.pendingExternalExecution.expanded ?? (msg.pendingExternalExecution.status === 'pending'))"
+                        >
+                          <svg
+                            class="h-3.5 w-3.5 transition-transform duration-200"
+                            :class="{ 'rotate-180': !(msg.pendingExternalExecution.expanded ?? (msg.pendingExternalExecution.status === 'pending')) }"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m19 15-7-7-7 7" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- Expanded Content -->
+                    <div v-show="msg.pendingExternalExecution.expanded ?? (msg.pendingExternalExecution.status === 'pending')" class="mt-2">
+                      <div class="text-sky-800/80 dark:text-sky-200/80 break-words">
+                        {{ msg.pendingExternalExecution.details }}
+                      </div>
+                      <div
+                        v-if="msg.pendingExternalExecution.tool_call?.name"
+                        class="mt-2 rounded-md bg-white/70 dark:bg-gray-950/30 border border-sky-100 dark:border-sky-900/40 p-2 font-mono text-[10px] text-gray-600 dark:text-gray-300 overflow-x-auto max-h-56 overflow-y-auto"
+                      >
+                        <div class="font-semibold text-sky-900 dark:text-sky-200 mb-0.5">{{ msg.pendingExternalExecution.tool_call.name }}</div>
+                        <pre v-if="msg.pendingExternalExecution.tool_call.args" class="whitespace-pre-wrap break-all font-mono">{{ JSON.stringify(msg.pendingExternalExecution.tool_call.args, null, 2) }}</pre>
+                      </div>
+                      <div v-if="msg.pendingExternalExecution.status === 'pending'" class="mt-3 space-y-2">
+                        <textarea
+                          v-model="msg.pendingExternalExecution.outputDraft"
+                          rows="4"
+                          placeholder="在此粘贴客户端执行该工具后的输出结果..."
+                          class="w-full rounded-md border border-sky-200 dark:border-sky-800 bg-white/90 dark:bg-gray-950/40 px-3 py-2 text-xs text-gray-700 dark:text-gray-200"
+                        />
+                        <button
+                          @click="submitPendingExternalExecution(msg)"
+                          :disabled="msg.pendingExternalExecution.isSubmitting"
+                          class="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          提交结果并继续
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <GroundingBlockedCard
+                v-if="msg.groundingBlocked"
+                class="mt-2"
+                :payload="msg.groundingBlocked"
+                :disabled="isProcessing"
+                @action="(action) => handleGroundingAction(msg.groundingBlocked, action)"
+              />
+              <!-- Main Content -->
+              <div v-if="visibleStreamBody(msg) && !msg.groundingBlocked" class="relative group/content mt-2">
+                <!-- Floating Copy Button (Moved here to avoid overlap) -->
+                <button
+                  v-if="!msg.datasetNavigation?.groups?.length"
+                  @click="copyMessage(visibleStreamBody(msg))"
+                  class="absolute -top-1 -right-1 p-1.5 text-gray-400 bg-white/90 dark:bg-gray-700/90 hover:bg-gray-100 dark:hover:bg-gray-600 hover:text-primary rounded-md opacity-0 group-hover/content:opacity-100 transition-all z-10 shadow-sm border border-gray-100 dark:border-gray-600"
+                  title="复制内容"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                </button>
+                                                                <AgentHandoffNotice v-if="msg.agentHandoff" :handoff="msg.agentHandoff" />
+                                                                <div
+                                                                  v-if="msg.permissionNotice?.row_filter_applied && !msg.chatbiInsight"
+                                                                  class="mb-2 inline-flex max-w-full items-start gap-1.5 rounded-lg border border-emerald-100 bg-emerald-50/70 px-2.5 py-1.5 text-[11px] font-medium leading-relaxed text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300"
+                                                                >
+                                                                  <svg class="mt-0.5 h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                                                  </svg>
+                                                                  <span>{{ msg.permissionNotice.message || '已按你的数据权限自动过滤结果' }}</span>
+                                                                </div>
+                                                                <MessageRenderer
+                                                                  v-if="!msg.groundingBlocked && !msg.datasetNavigation?.groups?.length"
+                                                                  :content="visibleStreamBody(msg)"
+                                                                  :theme="config.markdownTheme"
+                                                                  :conversation-id="conversationId"
+                                                                  :enable-browser-open="true"
+                                                                  :quick-context="quickContextForMessage(msg)"
+                                                                  :hide-quick-buttons="!!msg.businessConfirmation || !!msg.userQuestion"
+                                                                  @quick-question="handleQuickQuestion"
+                                                                  @show-citation="(payload) => handleShowCitation(msg, payload.id, payload.anchor)"
+                                                                  @open-canvas="handleOpenCanvas"
+                                                                  @preview-generated-file="previewGeneratedFileInCanvas"
+                                                                  @open-browser-url="handleOpenWebPreviewUrl"
+                                                                />
+                                                                <ErrorDetailCard
+                                                                  v-if="msg.errorDetail?.rawError"
+                                                                  :raw-error="msg.errorDetail.rawError"
+                                                                  :ai-status="msg.errorDetail.aiStatus"
+                                                                />
+                                                                <DatasetCapabilityMenu
+                                                                  v-if="msg.datasetNavigation"
+                                                                  :payload="msg.datasetNavigation"
+                                                                  @quick-question="handleQuickQuestion"
+                                                                  @record-question-click="(payload) => recordDatasetMenuQuestionClick(msg.datasetNavigation, payload)"
+                                                                  @clear-question-click="(payload) => clearDatasetMenuQuestionClick(msg.datasetNavigation, payload)"
+                                                                  @refresh="refreshDatasetMenuNavigation(msg)"
+                                                                  @execute-saved-report="handleExecuteSavedReport"
+                                                                />
+                                <!-- Typewriter Cursor -->
+                                <span
+                                  v-if="isProcessing && msg.id === lastAgentMessage?.id && !msg.isThinking"
+                                  class="inline-block w-1.5 h-4 ml-1 bg-primary/60 animate-pulse-fast align-middle rounded-sm"
+                                  :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
+                                                                ></span>
+                                                              </div>
+
+              <BusinessConfirmationCard
+                v-if="msg.businessConfirmation"
+                :payload="msg.businessConfirmation"
+                :disabled="isProcessing"
+                @submit="(payload) => submitBusinessConfirmation(msg, payload)"
+              />
+
+              <UserQuestionCard
+                v-if="msg.userQuestion"
+                :payload="msg.userQuestion"
+                :disabled="isProcessing"
+                @submit="(payload) => submitUserQuestion(msg, payload)"
+              />
+
+                                <!-- AI Stalled Thinking Prompt (Moved out to be sibling to msg.content) -->
+                                <div
+                                  v-if="isProcessing && msg.id === lastAgentMessage?.id && showStalledPrompt"
+                                  class="mt-2"
+                                >
+                                  <span
+                                    class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-blue-200/55 dark:bg-blue-900/55 border border-blue-200/80 dark:border-blue-900/50 text-[11px] text-blue-600 dark:text-blue-300 select-none animate-fade-in align-middle backdrop-blur-sm shadow-sm"
+                                  >
+                                    <svg class="w-3 h-3 text-blue-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
+                                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    <span>AI 还在思考，请稍后</span>
+                                    <span class="inline-flex space-x-0.5 ml-0.5">
+                                      <span class="animate-bounce-dot text-blue-500 font-bold" style="animation-delay: 0s">.</span>
+                                      <span class="animate-bounce-dot text-blue-500 font-bold" style="animation-delay: 0.15s">.</span>
+                                      <span class="animate-bounce-dot text-blue-500 font-bold" style="animation-delay: 0.3s">.</span>
+                                    </span>
+                                  </span>
+                                </div>
+                                                            </div>
+            <!-- Agent Message Actions (Overlay/Bottom) -->
+            <ChatBIInsightPanel
+              v-if="msg.chatbiInsight || (msg.citations && msg.citations.length)"
+              :meta="msg.chatbiInsight"
+              :citations="msg.citations"
+              @open-citation="({ citation, event }) => openCitationPopover(citation, event)"
+            />
+            <ChatBIMetadataGuide v-if="msg.chatbiMetadataGuide" :guide="msg.chatbiMetadataGuide" @select="handleQuickQuestion" />
+            <div
+              v-if="!(isProcessing && msg.id === lastAgentMessage?.id)"
+              class="flex min-w-0 max-w-full flex-nowrap items-center space-x-2 overflow-x-auto sm:overflow-x-visible mt-1 scrollbar-hide"
+            >
+              <!-- Time -->
+              <span v-if="msg.timestamp" class="text-[10px] text-gray-400 dark:text-gray-500 select-none mr-1 whitespace-nowrap shrink-0">{{ formatBubbleTime(msg.timestamp) }}</span>
+              <!-- 复制 (纯图标 + 自定义 Tooltip) -->
+              <div class="group relative inline-flex items-center justify-center">
+                <button
+                  @click="copyMessage(visibleStreamBody(msg))"
+                  class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 hover:text-primary transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 dark:text-gray-400 dark:hover:text-primary-active"
+                  aria-label="复制"
+                >
+                  <svg
+                    class="w-3.5 h-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                    />
+                  </svg>
+                </button>
+                <div class="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-center z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                  <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 -mb-0.5"></div>
+                  <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                    复制
+                  </div>
+                </div>
+              </div>
+
+              <!-- 重新生成 (纯图标 + 自定义 Tooltip) -->
+              <div
+                v-if="msg === lastAgentMessage && !isProcessing"
+                class="group relative inline-flex items-center justify-center"
+              >
+                <button
+                  @click="regenerate"
+                  class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 hover:text-primary transition-colors hover:bg-gray-100 dark:hover:bg-gray-800 dark:text-gray-400 dark:hover:text-primary-active"
+                  aria-label="重新生成"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+                <div class="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-center z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                  <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 -mb-0.5"></div>
+                  <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                    重新生成
+                  </div>
+                </div>
+              </div>
+
+              <!-- 点赞点踩移到重新生成后面 (纯图标 + 自定义 Tooltip) -->
+              <template v-if="!hideEmbedLikeDislike">
+                <!-- 点赞 -->
+                <div class="group relative inline-flex items-center justify-center">
+                  <button
+                    @click="handleFeedback(msg, 'up')"
+                    class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-green-50 dark:hover:bg-green-900/20 text-gray-400 hover:text-green-500"
+                    :class="msg.feedback === 'up' ? 'text-green-500 bg-green-50 dark:bg-green-900/20' : ''"
+                    aria-label="很有帮助"
+                  >
+                    <svg
+                      class="w-3.5 h-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.75"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        d="M14 10h4.708C19.712 10 20.5 10.743 20.5 11.658c0 .354-.05.7-.145 1.03l-1.921 6.641C18.232 20.141 17.514 21 16.5 21H8.5c-1.105 0-2-.895-2-2v-8c0-.55.224-1.05.586-1.414l5-5c.381-.381 1-.381 1.381 0L14 5v5z"
+                      />
+                    </svg>
+                  </button>
+                  <div class="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-center z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                    <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 -mb-0.5"></div>
+                    <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                      很有帮助
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 点踩 -->
+                <div class="group relative inline-flex items-center justify-center">
+                  <button
+                    @click="handleFeedback(msg, 'down')"
+                    class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500"
+                    :class="msg.feedback === 'down' ? 'text-red-500 bg-red-50 dark:bg-red-900/20' : ''"
+                    aria-label="回答不准确"
+                  >
+                    <svg
+                      class="w-3.5 h-3.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.75"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        d="M10 14H5.292C4.288 14 3.5 13.257 3.5 12.342c0-.354.05-.7.145-1.03l1.921-6.641C5.768 3.859 6.486 3 7.5 3h8c1.105 0 2 .895 2 2v8c0 .55-.224 1.05-.586 1.414l-5 5c-.381.381-1 .381-1.381 0L10 19v-5z"
+                      />
+                    </svg>
+                  </button>
+                  <div class="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 opacity-0 group-hover:opacity-100 transition-all duration-150 flex flex-col items-center z-50 transform -translate-y-0.5 group-hover:translate-y-0">
+                    <div class="w-1.5 h-1.5 bg-gray-900/90 dark:bg-gray-800/95 rotate-45 -mb-0.5"></div>
+                    <div class="rounded-md bg-gray-900/90 dark:bg-gray-800/95 px-2 py-0.5 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm whitespace-nowrap">
+                      回答不准确
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <!-- 数据 / 文件 -->
+              <div class="hidden sm:block shrink-0">
+                <MessageActionMenus
+                  mode="data"
+                  :has-conversation-data-file="hasConversationDataFile"
+                  :reusable-result-id="msg.reusableResultStatus?.resultId"
+                  :has-conversation-reusable-result="hasConversationReusableResult"
+                  :has-conversation-artifact="hasConversationArtifact"
+                  :conversation-reusable-count="conversationReusableResultCount"
+                  :conversation-artifact-count="conversationArtifactCount"
+                  :reusable-count="currentMessageReusableCount(msg)"
+                  :artifact-count="msg.trace_id ? artifactCount(msg.trace_id) : 0"
+                  @open-reusable-results="openReusableResults(msg.reusableResultStatus?.resultId, msg.trace_id, msg.reusableResultStatus?.status)"
+                  @open-artifacts="openMessageArtifacts(msg.trace_id)"
+                />
+              </div>
+              <!-- 数据 / 文件（移动端）：有徽标进抽屉看数据；没有徽标但能看调用统计则退回「查看调用详情」；两者都没有则仍进抽屉 -->
+              <button
+                v-if="hasConversationDataFile"
+                type="button"
+                class="sm:hidden flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                :aria-label="mobileDataAriaLabel(msg)"
+                @click="handleMobileDataClick(msg)"
+              >
+                <span aria-hidden="true">▤</span>
+                <span v-if="currentMessageReusableCount(msg) > 0" class="rounded-full bg-primary px-1.5 py-0.5 text-[9px] font-semibold leading-none text-white">数据 {{ currentMessageReusableCount(msg) }}</span>
+                <span v-if="msg.trace_id && artifactCount(msg.trace_id) > 0" class="rounded-full bg-primary px-1.5 py-0.5 text-[9px] font-semibold leading-none text-white">文件 {{ artifactCount(msg.trace_id) }}</span>
+              </button>
+              <!-- Token 消耗（桌面）：移动端不再占操作栏位置，能力进操作抽屉 -->
+              <button
+                v-if="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined || msg.total_tokens !== undefined"
+                @click="openModelCallStats(msg)"
+                class="hidden sm:flex shrink-0 items-center space-x-1 text-[11px] text-gray-500 dark:text-gray-400 hover:text-primary dark:hover:text-primary-active hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors rounded px-1.5 py-1 select-none cursor-pointer"
+                :title="getMessageTokenTooltip(msg)"
+              >
+                <svg class="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <ellipse cx="12" cy="5" rx="9" ry="3" />
+                  <path d="M3 5v14a9 3 0 0 0 18 0V5" />
+                  <path d="M3 12a9 3 0 0 0 18 0" />
+                </svg>
+                <span>用量 {{ getMessageTokenAmount(msg) }}</span>
+              </button>
+              <!-- 业务扩展与更多操作（桌面：保持完整宽度，随操作栏滚动；移动端改由操作抽屉承载）
+                   下面两个继续分析组件在本页恒传 is-mobile=false：它们的触发按钮已被 hidden sm:flex
+                   隐藏，移动端形态不可达，没必要为每条消息多挂一个打不开的抽屉壳。
+                   （调试页 AgentDebug 没有统一操作抽屉，仍按真实宽度传值。） -->
+              <div class="hidden sm:flex shrink-0 items-center space-x-1">
+                <ChatBIContinueAnalysis
+                  v-if="msg.chatbiInsight?.actions?.length && checkRole(msg, 'agent') && !msg.isThinking"
+                  :actions="msg.chatbiInsight.actions"
+                  :is-mobile="false"
+                  :result-id="msg.chatbiInsight.result_id"
+                  @select="handleChatBIContinueSelect"
+                  @action="(action) => handleChatBIResultAction(action, msg)"
+                />
+                <MessageContinueAnalysis
+                  v-if="checkRole(msg, 'agent') && isGeneralAgentMessage(msg) && !msg.chatbiInsight?.actions?.length && !msg.isThinking && visibleStreamBody(msg)"
+                  :is-mobile="false"
+                  @select="(query) => handleQuickQuestion(query, 'send', visibleStreamBody(msg))"
+                />
+                <MessageActionMenus
+                  mode="more"
+                  :show-data-on-mobile="true"
+                  :has-conversation-data-file="hasConversationDataFile"
+                  :reusable-result-id="msg.reusableResultStatus?.resultId"
+                  :has-conversation-reusable-result="hasConversationReusableResult"
+                  :has-conversation-artifact="hasConversationArtifact"
+                  :conversation-reusable-count="conversationReusableResultCount"
+                  :conversation-artifact-count="conversationArtifactCount"
+                  :can-export="Boolean(msg.trace_id)"
+                  :has-trace="Boolean(msg.trace_id)"
+                  :reusable-count="currentMessageReusableCount(msg)"
+                  :artifact-count="msg.trace_id ? artifactCount(msg.trace_id) : 0"
+                  :has-token-stats="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined"
+                  :can-save-report="canSaveGoldenReportFromMessage(msg) && checkRole(msg, 'agent') && !msg.isThinking"
+                  @export-data="msg.trace_id && exportData(msg.trace_id, 'xlsx')"
+                  @open-reusable-results="openReusableResults(msg.reusableResultStatus?.resultId, msg.trace_id, msg.reusableResultStatus?.status)"
+                  @open-artifacts="openMessageArtifacts(msg.trace_id)"
+                  @open-trace="msg.trace_id && openEmbedTrace(msg.trace_id)"
+                  @open-stats="openModelCallStats(msg)"
+                  @save-report="handleSaveReportFromMessage(msg)"
+                />
+              </div>
+              <!-- 移动端：⋯ 更多（打开底部操作抽屉） -->
+              <button
+                v-if="hasMobileSheetContent(msg)"
+                type="button"
+                class="sm:hidden flex min-h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                aria-haspopup="dialog"
+                :aria-expanded="mobileActionsMessageId === msg.id"
+                @click="openMobileActions(msg, null)"
+              >⋯ 更多</button>
+            </div>
+            <!-- 移动端操作抽屉（Teleport 到 body，不参与操作栏布局） -->
+            <MobileActionSheet
+              :open="mobileActionsMessageId === msg.id"
+              title="更多操作"
+              @close="closeMobileActions"
+            >
+              <MobileMessageActionsSheet
+                :focus="mobileActionsFocus"
+                :has-conversation-data-file="hasConversationDataFile"
+                :reusable-count="currentMessageReusableCount(msg)"
+                :artifact-count="msg.trace_id ? artifactCount(msg.trace_id) : 0"
+                :has-reusable-result-entry="hasConversationReusableResult"
+                :has-artifact-entry="hasConversationArtifact"
+                :conversation-reusable-count="conversationReusableResultCount"
+                :conversation-artifact-count="conversationArtifactCount"
+                :can-export="Boolean(msg.trace_id)"
+                :has-trace="Boolean(msg.trace_id)"
+                :has-token-stats="msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined"
+                :token-label="getMessageTokenAmount(msg)"
+                :can-save-report="canSaveGoldenReportFromMessage(msg) && checkRole(msg, 'agent') && !msg.isThinking"
+                :chatbi-actions="msg.chatbiInsight?.actions || []"
+                :show-generic-continue="checkRole(msg, 'agent') && isGeneralAgentMessage(msg) && !msg.chatbiInsight?.actions?.length && !msg.isThinking && visibleStreamBody(msg)"
+                @export-data="msg.trace_id && exportData(msg.trace_id, 'xlsx')"
+                @open-reusable-results="openReusableResults(msg.reusableResultStatus?.resultId, msg.trace_id, msg.reusableResultStatus?.status)"
+                @open-artifacts="openMessageArtifacts(msg.trace_id)"
+                @open-trace="msg.trace_id && openEmbedTrace(msg.trace_id)"
+                @open-stats="openModelCallStats(msg)"
+                @save-report="handleSaveReportFromMessage(msg)"
+                @continue-analysis="(query) => handleQuickQuestion(query, 'send', visibleStreamBody(msg))"
+                @chatbi-action="(action) => handleSheetChatbiAction(action, msg)"
+                @close="closeMobileActions"
+              />
+            </MobileActionSheet>
+            </div>
+        </div>
+      </div>
+    </div>
+    <!-- Floating Scroll Down Button (Refined) -->
+    <transition
+      enter-active-class="transition-all duration-500 cubic-bezier(0.34, 1.56, 0.64, 1)"
+      enter-from-class="opacity-0 translate-y-10 scale-50"
+      enter-to-class="opacity-100 translate-y-0 scale-100"
+      leave-active-class="transition-all duration-300 ease-in"
+      leave-to-class="opacity-0 translate-y-4 scale-90"
+    >
+      <div
+        v-if="showNewMessageHint"
+        class="absolute bottom-52 left-1/2 -translate-x-1/2 z-30"
+      >        <button
+          @click="scrollToBottom(true)"
+          class="flex items-center space-x-2 px-4 py-2.5 bg-primary text-white shadow-2xl shadow-primary/40 rounded-full text-xs font-black hover:-translate-y-0.5 active:scale-95 transition-all group"
+          :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
+        >
+          <svg class="w-4 h-4 animate-bounce" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M19 13l-7 7-7-7" /></svg>
+          <span class="tracking-widest uppercase">查看最新消息</span>
+          <div class="ml-1 w-1.5 h-1.5 rounded-full bg-white animate-pulse"></div>
+        </button>
+      </div>
+    </transition>
+
+    <CitationPopover
+      :visible="citationPopover.visible"
+      :citation="citationPopover.citation"
+      :anchor-rect="citationPopover.anchorRect"
+      :anchor-el="citationPopover.anchorEl"
+      @close="closeCitationPopover"
+      @copy="(content) => copyToClipboard(content)"
+      @view-original="handleViewOriginal"
+    />
+
+    <RagPreviewDrawer
+      v-model="ragPreviewVisible"
+      :doc-name="ragPreviewDocName"
+      :page-no="ragPreviewPageNo"
+      :file-url="ragPreviewFileUrl"
+      :content="ragPreviewContent"
+    />
+
+    <!-- Input Area -->
+    <div v-if="hasPermission && !urlAgentAccessError" class="flex-shrink-0 bg-white dark:bg-gray-900 relative z-20">
+      <div
+        v-if="quotaBannerMessage"
+        class="px-4 py-2 text-xs border-b"
+        :class="quotaIsBlocked ? 'bg-rose-50 text-rose-800 border-rose-100' : 'bg-amber-50 text-amber-800 border-amber-100'"
+      >
+        {{ quotaBannerMessage }}
+      </div>
+      <div v-if="skillCreatedInfo" class="px-3 pt-2">
+        <SkillCreatedBanner
+          :info="skillCreatedInfo"
+          @mount="mountCreatedSkill"
+          @dismiss="dismissCreatedSkill"
+        />
+      </div>
+      <ChatInput
+        ref="chatInputRef"
+        v-model="userInput"
+        :is-processing="isProcessing || remoteRunBusy || recoveryLocking"
+        :is-submitting="sendLocked"
+        :show-shortcuts="!isMobile && config.showShortcuts"
+        :slash-commands="effectiveSlashCommands"
+        :allowed-agents="allowedAgents"
+        :current-user="currentUser"
+        :window-width="windowWidth"
+        :approval-mode="config.approvalMode"
+        :selected-model="effectiveOverrideModel"
+        :available-models="chatInputModelOptions"
+        :context-usage="contextUsage"
+        :context-compaction-enabled="Boolean(conversationId)"
+        :context-compaction-count="contextCompactionCount"
+        :context-compaction-records="contextCompactions"
+        :context-compaction-loading="contextCompactionsLoading"
+        :context-compaction-error="contextCompactionsError"
+        :context-compaction-action-loading="contextCompactionActionLoading"
+        :thinking-enable-override="thinkingEnableOverride"
+        :reasoning-effort-override="reasoningEffortOverride"
+        :temperature-override="temperatureOverride"
+        :active-ltm-preference="activeLtmPreference"
+        :agent-id="effectiveEmbedChatAgentId"
+        :attached-mcp-tool-names="(resourceScope.mcp_tools || []).map((item: any) => String(item.name || '')).filter(Boolean)"
+        :routing-mode="config.routingMode"
+        :expert-agent-id="config.expertAgentId"
+        :allow-model-switch="chatModelSwitch.visible"
+        :model-switch-hint="chatModelSwitch.emptyHint"
+        :is-loading-agents="isLoadingAgents"
+        :lock-expert-agent="isRoutingSettingsLocked"
+        :sandbox-workspace-status="sandboxWorkspaceStatus"
+        :sandbox-warm-hint-visible="sandboxWarmHintVisible"
+        :sandbox-warm-hint-title="sandboxWarmHintTitle"
+        :sandbox-warm-hint-subtitle="sandboxWarmHintSubtitle"
+        @dismiss-sandbox-warm-hint="dismissSandboxWarmHint"
+        :sandbox-workspace-instance-id="sandboxWorkspaceInstanceId"
+        :sandbox-workspace-started-at="sandboxWorkspaceStartedAt"
+        :sandbox-workspace-uptime-seconds="sandboxWorkspaceUptimeSeconds"
+        :sandbox-workspace-error="sandboxWorkspaceError"
+        :sandbox-backend="sandboxBackend"
+        :sandbox-idle-minutes="contextUsage?.sandbox_idle_minutes ?? null"
+        :sandbox-refreshing="sandboxWorkspaceRefreshing"
+        :enable-grounding="config.enableGrounding"
+        :show-generating-animation="config.showGeneratingAnimation"
+        :grounding-block-mode="config.groundingBlockMode"
+        @start-sandbox-workspace="ensureSandboxWorkspace"
+        @refresh-sandbox-workspace="refreshSandboxWorkspaceStatus"
+        @stop-sandbox-workspace="handleStopSandboxWorkspaceRequest"
+        @restart-sandbox-workspace="restartSandboxWorkspace"
+        @open-docker-terminal="openDockerTerminal"
+        @update:approval-mode="(mode) => { config.approvalMode = mode; saveRoutingSettings(); }"
+        @update:selected-model="handleEmbedModelSelection"
+        @update:thinking-enable-override="thinkingEnableOverride = $event"
+        @update:reasoning-effort-override="reasoningEffortOverride = $event"
+        @update:temperature-override="temperatureOverride = $event"
+        @send="sendMessage"
+        @refresh-context-compactions="refreshEmbedContextCompactions(true)"
+        @manual-context-compaction="manualCompactEmbedContext"
+        @stop="stopGeneration"
+        @toggle-shortcuts="toggleShortcuts"
+        @open-command-manager="showAddModal = true"
+        @delete-command="confirmDeleteCommand"
+        @switch-mode="handleSwitchMode"
+        @switch-to-auto="switchToAuto"
+        @switch-to-expert="switchToExpert"
+        @refresh-agents="fetchAllowedAgents(true)"
+        @reorder-commands="handleReorderCommands"
+        @select-knowledge-base="openKnowledgePortal"
+        @select-local-fs="openWorkspaceDrawer"
+        @select-memory="openMemorySelector"
+        @select-mcp-tool="mountMcpToolToSession"
+        @system-command="handleSystemCommand"
+        @ignore-ltm="handleIgnoreLtm"
+        @dismiss-ltm="activeLtmPreference = null"
+        @disable-grounding="disableGroundingWithToast"
+        @open-grounding-settings="showSettings = true"
+      >
+        <template #banner>
+          <div
+            v-if="selectedReusableResultId"
+            class="mx-3 mt-2 mb-2 flex items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary dark:bg-primary/10"
+          >
+            <span class="truncate">已选择可复用结果，发送后将优先使用上一轮数据</span>
+            <button
+              type="button"
+              class="shrink-0 font-semibold hover:underline"
+              @click="selectedReusableResultId = null"
+            >
+              取消
+            </button>
+          </div>
+          <div v-if="activeTodoTimeline" class="mx-3 mt-2">
+            <ChatTodoCard :timeline="activeTodoTimeline" />
+          </div>
+          <ChatRecoveryCard
+            class="mx-3 mt-2"
+            :state="recoveryCardState"
+            @dismiss="dismissRecoveryCard"
+          />
+
+          <!-- 移动端「进行中的会话」：从「更多」进入，用 modal 变体（带遮罩）展示 -->
+          <ActiveRunsPopover
+            v-if="isMobile"
+            :open="showActiveRuns"
+            :items="activeRunViews"
+            :loading="activeRunsLoading"
+            :failed="activeRunsFailed"
+            :active-conversation-id="conversationId"
+            variant="modal"
+            @select="handleActiveRunSelect"
+            @terminate="handleActiveRunTerminate"
+            @refresh="refreshActiveRuns"
+            @close="showActiveRuns = false"
+            @open-history="handleActiveRunsOpenHistory"
+          />
+          <div
+            v-if="sandboxDegradedMessage || showBashBanner"
+            class="mx-3 mt-2"
+          >
+            <Transition name="bash-banner-fade">
+              <div
+                v-if="sandboxDegradedMessage"
+                role="status"
+                class="mb-2 flex items-start justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/40 dark:text-amber-100"
+              >
+                <div class="flex items-start gap-2 min-w-0">
+                  <span class="font-semibold shrink-0">⚠ 沙箱降级</span>
+                  <span class="text-amber-800/90 dark:text-amber-200/80 break-words">{{ sandboxDegradedMessage }}</span>
+                </div>
+                <button
+                  type="button"
+                  class="shrink-0 rounded px-1 text-amber-600/90 hover:text-amber-700 dark:text-amber-300/80 dark:hover:text-amber-200"
+                  title="隐藏提示"
+                  @click="dismissSandboxDegraded"
+                >
+                  ×
+                </button>
+              </div>
+            </Transition>
+            <Transition name="bash-banner-fade">
+              <BashEnvBanner
+                v-if="showBashBanner"
+                :env="bashBannerEnv!"
+                @dismiss="bashBannerDismissed = true"
+                @ignore="handleIgnoreBashBanner"
+              />
+            </Transition>
+          </div>
+        </template>
+      </ChatInput>
+    </div>
+
+    <ResourceScopeModal
+      :visible="showResourceScopeModal"
+      :draft="resourceScopeModalDraft"
+      :groups="resourceOptionGroups"
+      :active-tab="resourceScopeActiveTab"
+      :orphan-count="modalResourceOrphanCount"
+      :loading="resourceOptionsLoading"
+      :saving="resourceScopeSaving"
+      :option-search="resourceOptionSearch"
+      :selected-count="modalSelectedCount"
+      :option-total-count="modalOptionTotalCount"
+      :skill-scope-selected-count="modalSkillScopeSelectedCount"
+      :skill-scope-total-count="modalSkillScopeTotalCount"
+      :orphan-selections="modalOrphanSelections"
+      :selected-chips="modalSelectedChips"
+      :sorted-options="sortedModalResourceOptions"
+      :option-selected="resourceModalOptionSelected"
+      :option-initial="resourceOptionInitial"
+      :option-accent="resourceOptionAccent"
+      @close="closeResourceScopeModal"
+      @refresh="refreshResourceOptions"
+      @save="saveResourceScope"
+      @update:active-tab="resourceScopeActiveTab = $event"
+      @remove-draft="removeModalDraftResource"
+      @toggle-option="toggleModalResourceOption"
+      @toggle-group="toggleModalResourceGroup"
+    />
+
+    <ChatCanvas
+      :visible="canvasVisible"
+      v-model:pinned="canvasPinned"
+      v-model:canvas-width="canvasPinnedWidthReactive"
+      :data="canvasData"
+      :overlay="canvasFromWorkspace"
+      :dock-side="canvasFromWorkspace ? 'left' : 'right'"
+      :adjacent-dock-width="canvasFromWorkspace && showWorkspaceDrawer && workspacePinned ? workspaceDrawerWidthReactive : 0"
+      :conversation-id="conversationId"
+      @close="closeCanvas"
+      @analyze-diff="handleAnalyzeDiff"
+      @analyze-output="handleAnalyzeCodeOutput"
+      @content-saved="handleWorkspaceContentSaved"
+    />
+    </div> <!-- Closing div for .flex-1.flex.flex-col -->
+
+    <KnowledgePortalDrawer
+      v-model="showKnowledgePortal"
+      v-model:pinned="knowledgePinned"
+      v-model:drawer-width="knowledgeDrawerWidthReactive"
+      v-model:keep-open-on-question="knowledgeKeepOpenOnQuestion"
+      v-model:hallucination-check="hallucinationCheckEnabled"
+      v-model:similarity-threshold="knowledgeSimilarityThreshold"
+      v-model:vector-weight="knowledgeVectorWeight"
+      v-model:metadata-top-k="knowledgeMetadataTopK"
+      :generated-at="knowledgeGeneratedAt"
+      :project-resource-scope="projectSessionHasKnowledgeScope ? '仅显示当前项目会话已挂载的知识库' : ''"
+      :datasets="scopedKnowledgeDatasets"
+      :active-dataset-ids="scopedActiveDatasetIds"
+      :recommendations="datasetRecommendations"
+      :pinned-dataset-ids="pinnedDatasetIds"
+      :dataset-documents="datasetDocuments"
+      :document-recommendations="documentRecommendations"
+      :loading="loadingKnowledgeDatasets"
+      :load-error="knowledgeLoadError"
+      @toggle-active="(id) => toggleDatasetActive(id, chatInputRef)"
+      @load-recommendations="fetchRecommendations"
+      @quick-question="handleQuickQuestion"
+      @refresh="fetchDatasets"
+      @toggle-pin="toggleDatasetPinned"
+      @load-documents="fetchDatasetDocuments"
+      @load-document-recommendations="fetchDocumentRecommendations"
+    />
+
+    <WorkspaceBrowserDrawer
+      ref="workspaceDrawerRef"
+      v-model="showWorkspaceDrawer"
+      v-model:keep-open-on-select="workspaceKeepOpenOnSelect"
+      v-model:pinned="workspacePinned"
+      v-model:drawer-width="workspaceDrawerWidthReactive"
+      :pinned-dock-right="workspacePinnedDockRightPx"
+      :conversation-id="conversationId"
+      :session-started="messages.length > 0"
+      @select="handleSelectLocalFs"
+      @preview="handleWorkspaceFilePreview"
+    />
+
+    <MyArtifactsDrawer
+      v-model="showMyArtifactsDrawer"
+      :conversation-id="conversationId"
+      :trace-id="focusedOutputTraceId"
+      :initial-tab="myArtifactsInitialTab"
+      :selected-result-id="selectedReusableResultId"
+      :focused-result-id="focusedReusableResultId"
+      :reused-result-id="reusedReusableResultId"
+      @select-reusable-result="selectReusableResult"
+      @preview-file="previewArtifactInCanvas"
+    />
+
+    <MemoryBrowserDrawer
+      v-model="showMemoryDrawer"
+      v-model:keep-open-on-select="memoryKeepOpenOnSelect"
+      v-model:pinned="memoryPinned"
+      :pinned-dock-right="memoryPinnedDockRightPx"
+      :attached-conversation-ids="attachedMemoryConversationIds"
+      @mount="handleMemoryMount"
+      @cleared="handleMemoryCleared"
+    />
+
+    <Teleport to="body">
+      <div
+        v-if="showTraceModal"
+        class="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4"
+        @click.self.stop="closeTraceModal"
+      >
+          <div
+              class="bg-white dark:bg-gray-800 w-full flex flex-col overflow-hidden animate-fade-in-up border border-gray-200 dark:border-gray-700 shadow-2xl transition-all duration-300"
+              :class="windowWidth < 640 ? 'h-full rounded-none' : 'max-w-3xl h-[80vh] rounded-xl'"
+          >
+              <!-- Header -->
+              <div
+                  class="px-4 py-3 sm:px-6 sm:py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50 flex-shrink-0"
+                  :class="windowWidth < 640 ? 'justify-center relative' : 'justify-between'"
+              >
+                  <div
+                      class="flex items-center gap-2 sm:gap-3 min-w-0"
+                      :class="windowWidth < 640 ? 'flex-col gap-0.5' : ''"
+                  >
+                      <!-- Watermark Number -->
+                      <div
+                          v-if="activeHistoryIndex >= 0"
+                          class="flex items-center justify-center w-5 h-5 rounded-full border flex-shrink-0 text-[9px] font-black select-none pointer-events-none -rotate-12 opacity-80"
+                          :style="{ color: `hsl(${(activeHistoryIndex * 137.5) % 360}, 70%, 50%)`, borderColor: `hsl(${(activeHistoryIndex * 137.5) % 360}, 70%, 40%, 0.3)` }"
+                      >
+                          {{ activeHistoryIndex + 1 }}
+                      </div>
+
+                      <h3 class="text-sm sm:text-lg font-black text-gray-800 dark:text-gray-100 truncate">会话回溯详情</h3>
+                      <!-- 排查「两个窗口是不是同一个会话」时，界面上必须有个地方能看到会话 ID；
+                           只露前 8 位（完整 UUID 会挤爆标题行），title 给全文，点击复制完整值。 -->
+                      <button
+                          v-if="traceLogData?.history?.conversation_id"
+                          type="button"
+                          class="text-[9px] sm:text-xs text-gray-400 font-mono bg-white dark:bg-gray-700 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-600 flex-shrink-0 hover:text-primary hover:border-primary/40"
+                          :title="`点击复制完整会话 ID：${traceLogData.history.conversation_id}`"
+                          @click.stop="copyToClipboard(traceLogData.history.conversation_id, 'conversation_id')"
+                      >
+                          ID {{ String(traceLogData.history.conversation_id).slice(0, 8) }}
+                      </button>
+                      <span v-if="traceLogData?.history?.created_at" class="text-[9px] sm:text-xs text-gray-400 font-mono bg-white dark:bg-gray-700 px-1.5 py-0.5 rounded border border-gray-100 dark:border-gray-600 flex-shrink-0">
+                          {{ formatDate(traceLogData.history.created_at).split(' ')[0] }}
+                      </span>
+                  </div>
+                  <div
+                      class="flex items-center gap-1 sm:gap-2 flex-shrink-0"
+                      :class="windowWidth < 640 ? 'absolute right-3' : ''"
+                  >
+                      <button
+                          v-if="traceLogData"
+                          @click.stop="continueChatFromTrace"
+                          class="flex items-center space-x-1.5 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-lg transition-all text-xs font-black border border-primary/20"
+                          title="加载此会话并继续聊天"
+                      >
+                          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                          </svg>
+                          <span>继续聊天</span>
+                      </button>
+
+                      <div v-if="traceLogData" class="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1"></div>
+
+                      <button
+                          @click.stop="openDeleteModal(traceLogData?.trace_id)"
+                          class="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
+                          title="删除此记录"
+                      >
+                          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                      </button>
+
+                      <div class="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1"></div>
+
+                      <button
+                           @click.stop="closeTraceModal"
+                           class="rounded-full transition-colors flex items-center justify-center bg-gray-100 dark:bg-gray-700 text-gray-500"
+                           :class="windowWidth < 640 ? 'w-8 h-8' : 'p-2 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white bg-transparent dark:bg-transparent'"
+                      >
+                          <svg class="w-5 h-5 sm:w-6 sm:h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+                      </button>
+
+                      <!-- Back Button Helper for Mobile (Left side) -->
+                      <button
+                           v-if="windowWidth < 640"
+                           @click.stop="closeTraceModal"
+                           class="absolute left-[calc(-100vw+60px)] top-1/2 -translate-y-1/2 p-2"
+                      >
+                         <!-- Invisible hit area extension if needed, or just rely on top right close -->
+                      </button>
+                  </div>
+              </div>
+              <!-- Content -->
+              <div class="flex-1 overflow-y-auto p-4 sm:p-6 bg-gray-50 dark:bg-gray-900 custom-scrollbar">
+                  <div v-if="loadingTrace" class="flex flex-col items-center justify-center h-full text-gray-400 py-20">
+                      <svg class="w-10 h-10 animate-spin mb-3 text-primary" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                      <p class="text-xs font-bold uppercase tracking-widest">正在安全同步执行链路</p>
+                  </div>
+                  <div v-else-if="traceLogData" class="space-y-4 sm:space-y-6 pb-10">
+                      <!-- Conversation Thread Thread -->
+                      <div v-if="conversationTurns.length > 0" class="space-y-6">
+                          <div v-for="(turn, tIdx) in conversationTurns" :key="turn.id"
+                               class="bg-white dark:bg-gray-800 p-4 rounded-3xl border border-gray-200 dark:border-gray-700 shadow-sm relative overflow-hidden"
+                               :class="{'ring-2 ring-primary/20': turn.trace_id === traceLogData.trace_id}"
+                          >
+                              <!-- Turn Header -->
+                              <div class="flex justify-between items-center mb-4">
+                                  <span class="text-[10px] font-black text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
+                                      <span class="w-2 h-2 rounded-full bg-blue-500 shadow-sm shadow-blue-500/20"></span>
+                                      对话回合 #{{ tIdx + 1 }}
+                                  </span>
+                                  <span class="text-[9px] text-gray-400 font-mono bg-gray-50 dark:bg-gray-700/50 px-2 py-0.5 rounded-full">{{ formatDate(turn.created_at) }}</span>
+                              </div>
+
+                              <!-- Q&A Content -->
+                              <div class="space-y-4">
+                                  <div>
+                                      <div class="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 opacity-70">提问 · Query</div>
+                                      <div class="text-gray-800 dark:text-gray-200 text-sm font-bold leading-relaxed whitespace-pre-wrap bg-gray-50/50 dark:bg-gray-900/30 p-3 rounded-xl border border-gray-100 dark:border-gray-800">
+                                          {{ turn.query || 'N/A' }}
+                                      </div>
+                                  </div>
+                                  <div>
+                                      <div class="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2 opacity-70">回答 · Response</div>
+                                      <div class="text-gray-600 dark:text-gray-300 text-xs sm:text-sm leading-relaxed">
+                                          <MessageRenderer
+                                            :content="stripInternalContextBlocks(turn.summary || 'N/A')"
+                                            :theme="config.markdownTheme"
+                                            :conversation-id="conversationId"
+                                            :enable-browser-open="true"
+                                            @open-browser-url="handleOpenWebPreviewUrl"
+                                          />
+                                      </div>
+                                  </div>
+                              </div>
+
+                              <!-- Embedded Thinking Chain (Steps) -->
+                              <div class="mt-6 pt-4 border-t border-gray-50 dark:border-gray-700/50">
+                                  <button
+                                      @click="toggleTurnSteps(turn)"
+                                      class="flex items-center justify-between w-full p-2.5 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-all group/btn"
+                                  >
+                                      <div class="flex items-center space-x-2 text-[11px] font-black text-gray-500 group-hover/btn:text-primary transition-colors uppercase tracking-widest">
+                                          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                          <span>执行全链路 (Steps)</span>
+                                          <span v-if="turn.steps?.length" class="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded text-[9px] font-mono">{{ turn.steps.length }}</span>
+                                      </div>
+                                      <div class="flex items-center">
+                                          <div v-if="turn.loading" class="w-3.5 h-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin mr-2"></div>
+                                          <svg
+                                              class="w-4 h-4 text-gray-400 transform transition-transform duration-300"
+                                              :class="{ 'rotate-180': turn.isExpanded }"
+                                              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                                          >
+                                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
+                                          </svg>
+                                      </div>
+                                  </button>
+
+                                  <!-- Steps List -->
+                                  <div v-show="turn.isExpanded" class="mt-4 space-y-4 pl-4 border-l-2 border-gray-100 dark:border-gray-700/50 animate-fade-in">
+                                      <div v-if="turn.steps && turn.steps.length > 0" class="space-y-4">
+                                          <div v-for="(step, sIdx) in turn.steps" :key="sIdx" class="relative group/step">
+                                              <!-- Step Dot -->
+                                              <div class="absolute -left-[26px] top-1 w-5 h-5 rounded-full border border-gray-200 dark:border-gray-700 shadow-sm flex items-center justify-center text-[9px] font-black text-white z-10"
+                                                  :class="step.status === 'error' ? 'bg-amber-500' : 'bg-blue-500'">
+                                                  {{ Number(sIdx) + 1 }}
+                                              </div>
+                                              <!-- Step Card -->
+                                              <div class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-3 shadow-sm">
+                                                  <div class="flex justify-between items-center mb-2">
+                                                      <div class="flex items-center gap-2">
+                                                          <span class="text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter"
+                                                              :class="step.event_type === 'thought' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'">
+                                                              {{ step.event_type }}
+                                                          </span>
+                                                          <span v-if="step.tool_name" class="text-[9px] font-black text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">
+                                                              {{ step.tool_name }}
+                                                          </span>
+                                                      </div>
+                                                      <span class="text-[8px] text-gray-400 font-mono">{{ step.execution_time_ms ? `${step.execution_time_ms.toFixed(0)}ms` : '' }}</span>
+                                                  </div>
+                                                  <div class="space-y-2">
+                                                      <pre v-if="step.tool_input" class="bg-gray-50 dark:bg-gray-900 p-2 rounded-lg text-[9px] text-gray-500 overflow-x-auto font-mono border border-gray-100 dark:border-gray-800">{{ typeof step.tool_input === 'string' ? step.tool_input : JSON.stringify(step.tool_input, null, 2) }}</pre>
+                                                      <div v-if="step.tool_output && step.tool_output.content" class="text-[11px] text-gray-600 dark:text-gray-300 leading-relaxed bg-blue-50/20 p-2 rounded-lg border border-blue-100/10">
+                                                          {{ step.tool_output.content }}
+                                                      </div>
+                                                  </div>
+                                              </div>
+                                          </div>
+                                      </div>
+                                      <div v-else-if="!turn.loading" class="py-4 text-center text-[10px] text-gray-400 italic">
+                                          暂无详细执行记录
+                                      </div>
+                                  </div>
+                              </div>
+
+                              <!-- Indicator for current trace -->
+                              <div v-if="turn.trace_id === traceLogData.trace_id" class="absolute top-0 right-0">
+                                  <div class="bg-primary text-white text-[8px] font-black px-2.5 py-1 rounded-bl-xl uppercase tracking-tighter shadow-sm animate-pulse">
+                                      Current Turn
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+                  <div v-else class="text-center py-16 text-gray-400 bg-white dark:bg-gray-800 rounded-2xl border border-dashed border-gray-200 dark:border-gray-700">
+                      <div class="mb-2 opacity-20"><svg class="w-12 h-12 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg></div>
+                      <p class="text-xs font-bold uppercase tracking-tighter">暂无详细执行日志回溯</p>
+                  </div>
+              </div>
+          </div>
+      </div>
+    </Teleport>
+    <!-- Delete Group Confirmation Modal -->
+    <ConfirmModal
+      v-if="showDeleteGroupModal"
+      title="一键删除分组会话"
+      :message="`确定要一键删除“${groupToDelete?.title}”分组下的这 ${groupToDelete?.items?.length || 0} 个会话吗？此操作无法撤销。`"
+      type="danger"
+      @confirm="confirmDeleteGroup"
+      @cancel="showDeleteGroupModal = false"
+    />
+    <!-- Delete Confirmation Modal -->
+    <ConfirmModal
+      v-if="showDeleteModal"
+      title="删除历史记录"
+      message="确定要删除这条对话记录吗？此操作无法撤销。"
+      type="danger"
+      @confirm="confirmDeleteTrace"
+      @cancel="showDeleteModal = false"
+    />
+    <!-- Delete Command Confirmation Modal -->
+    <ConfirmModal
+      v-if="showDeleteCommandModal"
+      title="删除快捷指令"
+      :message="`确定要删除指令 [${commandToDelete?.label}] 吗？`"
+      type="danger"
+      @confirm="executeDeleteCommand"
+      @cancel="showDeleteCommandModal = false"
+    />
+    <!-- Docker Workspace Terminal Modal -->
+    <DockerTerminalModal
+      :show="showDockerTerminal"
+      :container-id="sandboxWorkspaceInstanceId"
+      :conversation-id="conversationId"
+      :auth-token="config.token"
+      @close="showDockerTerminal = false"
+    />
+    <!-- Kubernetes 沙箱 Pod 终端 -->
+    <K8sTerminalModal
+      :show="showK8sTerminal"
+      :pod-name="sandboxWorkspaceInstanceId"
+      :conversation-id="conversationId"
+      :auth-token="config.token"
+      @close="showK8sTerminal = false"
+    />
+    <!-- K8s 沙箱停止二次确认 -->
+    <ConfirmModal
+      v-if="showSandboxStopConfirm"
+      title="停止 Kubernetes 沙箱"
+      :message="`确定要停止当前沙箱 Pod 吗？\n将销毁沙箱 Pod；若为动态独立卷且已开启 delete_pvc_on_close，工作区数据将随 PVC 一并删除。停止后可重新启动，Pod 重建需等待镜像拉取与调度。`"
+      type="danger"
+      @confirm="confirmStopSandboxWorkspace"
+      @cancel="showSandboxStopConfirm = false"
+    />
+    <!-- Settings Modal -->
+    <ChatTour
+      ref="tourRef"
+      v-model="tourActive"
+      :steps="TOUR_STEPS"
+      :initial-index="tourStepIndex"
+      @change="handleTourChange"
+      @enter="handleTourEnter"
+      @leave="handleTourLeave"
+      @missing-target="handleTourMissing"
+      @finish="tour.finish()"
+      @skip="tour.skip()"
+    />
+    <ChatSettings
+      v-model:visible="showSettings"
+      :tour-completed-at="tourCompletedAt"
+      :config="config"
+      :allowed-agents="allowedAgents"
+      :routing-locked="isRoutingSettingsLocked"
+      :is-admin="currentUser?.role === 'admin'"
+      @set-theme="setTheme"
+      @set-color="setColor"
+      @mode-change="onModeChange"
+      @switch-to-auto="switchToAuto"
+      @switch-to-expert="switchToExpert"
+      @save-settings="saveRoutingSettings"
+      @reset-session="resetSession"
+      @replay-tour="handleReplayTour"
+    />
+    <PersonalResourcesModal
+      v-model:visible="showPersonalResources"
+      v-model:active-tab="personalResourcesTab"
+      @open-report="handlePersonalResourceOpenReport"
+      @open-conversation="handlePersonalResourceOpenConversation"
+      @open-question="(payload) => {
+        if (!payload || typeof payload !== 'object') return;
+        const question = payload as { query?: unknown; action?: unknown };
+        if (typeof question.query !== 'string') return;
+        handlePersonalResourceOpenQuestion({
+          query: question.query,
+          action: question.action === 'fill' ? 'fill' : 'send',
+        });
+      }"
+    />
+    <!-- Embed 内独立站内消息弹层：iframe / 外部集成不依赖 Dashboard 顶栏铃铛 -->
+    <PortalNotificationBell
+      ref="portalInboxRef"
+      variant="modal"
+      :listen-global-event="false"
+      @open-saved-report="handleInboxOpenSavedReport"
+    />
+    <DataPortalReportCreateModal
+      :visible="showSaveReportModal"
+      :report="saveReportForm"
+      :overlay-class="saveReportModalOverlayClass"
+      :overlay-style="saveReportModalOverlayStyle"
+      scrollbar-variant="embed"
+      @close="closeSavedReportEditor"
+      @created="handleSavedReportEditorCreated"
+    />
+
+    <SavedReportRunModal
+      :visible="showReportRunModal"
+      :pending-report="pendingSavedReport"
+      :form="reportRunForm"
+      :previewing="isPreviewingSavedReport"
+      :preview="reportRunPreview"
+      :uses-month-range="savedReportUsesMonthRange"
+      :uses-date-range="savedReportUsesDateRange"
+      :overlay-class="saveReportModalOverlayClass"
+      :overlay-style="saveReportModalOverlayStyle"
+      @close="showReportRunModal = false"
+      @execute="executeSavedReportWithOptions"
+    />
+
+    <!-- Modal: Help Guide -->
+    <Teleport to="body">
+      <div
+        v-if="showHelpModal"
+        class="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+        @click.self="showHelpModal = false"
+      >
+        <div
+          class="bg-white dark:bg-gray-800 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-gray-100 dark:border-gray-700 animate-fade-in-up"
+          :class="windowWidth < 640 ? 'h-[80vh]' : 'max-h-[85vh]'"
+        >
+          <!-- Header -->
+          <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50/50 dark:bg-gray-800/50">
+            <div class="flex items-center space-x-2">
+              <div class="p-1.5 bg-primary/10 rounded-lg text-primary">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h3 class="text-base font-black text-gray-800 dark:text-gray-100 uppercase tracking-widest">使用指南</h3>
+            </div>
+            <button @click="showHelpModal = false" class="p-2 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors text-gray-400">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+
+          <!-- Body -->
+          <div class="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+            <!-- Intro -->
+            <section>
+              <h4 class="text-xs font-black text-primary uppercase tracking-widest mb-3 flex items-center">
+                 <span class="w-1.5 h-1.5 rounded-full bg-primary mr-2"></span>
+                 系统简介
+              </h4>
+              <p class="text-sm text-gray-600 dark:text-gray-400 leading-relaxed font-medium">
+                🚀 欢迎使用<b>本智能体平台</b>。本系统是一个集成多模型能力的 🤖 AI 助手，旨在通过自然语言交互，帮助您高效完成<b>通用咨询问答</b>、📊 数据查询分析、📚 私有文档检索及 ⚙️ 复杂业务流程处理。
+              </p>
+            </section>
+
+            <!-- Interaction -->
+            <section>
+              <h4 class="text-xs font-black text-primary uppercase tracking-widest mb-4 flex items-center">
+                 <span class="w-1.5 h-1.5 rounded-full bg-primary mr-2"></span>
+                 如何交互
+              </h4>
+              <div class="grid grid-cols-1 gap-3">
+                 <div class="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-100 dark:border-gray-800 flex items-start space-x-3">
+                    <div class="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded text-xs font-mono text-blue-500 font-bold">/</div>
+                    <div>
+                      <div class="text-[11px] font-black text-gray-800 dark:text-gray-200 uppercase mb-0.5">快捷指令</div>
+                      <p class="text-[10px] text-gray-500 mb-2">Web 端支持<b>直接点击</b>快捷按钮；移动端输入斜杠 <span class="font-mono text-blue-500">/</span> 即可快速唤起。</p>
+                      <p class="text-[10px] text-gray-500 mb-2"><span class="font-mono text-blue-500">{{ DATASET_PORTAL_SLASH_COMMAND }}</span> 会基于与 ChatBI 相同的数据集目录，由 AI 生成我的数据门户与可点击追问按钮。</p>
+                      <div class="flex flex-wrap gap-1.5">
+                        <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">{{ DATASET_PORTAL_SLASH_COMMAND }}</span>
+                        <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">/new</span>
+                        <span class="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-[9px] rounded border border-blue-100 dark:border-blue-800 font-medium">/history</span>
+                      </div>
+                    </div>
+                 </div>
+                 <div class="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-100 dark:border-gray-800 flex items-start space-x-3">
+                    <div class="px-2 py-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded text-xs font-mono text-purple-500 font-bold">@</div>
+                    <div>
+                      <div class="text-[11px] font-black text-gray-800 dark:text-gray-200 uppercase mb-0.5">提及专家</div>
+                      <p class="text-[10px] text-gray-500 mb-2">Web 端可<b>从专家列表点击</b>指定；移动端输入艾特符号 <span class="font-mono text-purple-500">@</span> 即可指定专业智能体。</p>
+                      <div class="flex flex-wrap gap-1.5">
+                        <span class="px-1.5 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[9px] rounded border border-purple-100 dark:border-purple-800 font-medium">@运维专家</span>
+                        <span class="px-1.5 py-0.5 bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[9px] rounded border border-purple-100 dark:border-purple-800 font-medium">@数据分析</span>
+                      </div>
+                    </div>
+                 </div>
+              </div>
+            </section>
+
+            <!-- Features -->
+            <section>
+              <h4 class="text-xs font-black text-primary uppercase tracking-widest mb-4 flex items-center">
+                 <span class="w-1.5 h-1.5 rounded-full bg-primary mr-2"></span>
+                 支持功能与示例 (点击可复制)
+              </h4>
+              <div class="space-y-4">
+                 <div class="group">
+                    <div class="flex items-start space-x-3 mb-2">
+                      <div class="p-2 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg text-indigo-500">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                      </div>
+                      <div>
+                        <div class="text-sm font-bold text-gray-800 dark:text-gray-200">通用聊天问答</div>
+                        <p class="text-[11px] text-gray-500 leading-relaxed">具备强大的语言理解能力，支持日常答疑、方案编写及代码建议。</p>
+                      </div>
+                    </div>
+                    <div
+                      class="ml-9 p-2.5 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 relative group/item cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all"
+                    >
+                      <p class="text-[10px] text-gray-600 dark:text-gray-400 italic pr-12" @click="copyToClipboard('帮我写一个关于机房节能降耗的宣传文案。', 'help_chat')">“帮我写一个关于机房节能降耗的宣传文案。”</p>
+                      <div class="absolute right-2 top-2.5 flex items-center space-x-2">
+                        <button
+                          @click="handleQuickQuestion('帮我写一个关于机房节能降耗的宣传文案。'); showHelpModal = false;"
+                          class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/item:opacity-100 hover:scale-105 transition-all flex items-center shadow-sm"
+                        >
+                          🚀 试一试
+                        </button>
+                        <div class="transition-all duration-300">
+                          <svg v-if="copiedId === 'help_chat'" class="w-3.5 h-3.5 text-emerald-500 scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                          <svg v-else @click="copyToClipboard('帮我写一个关于机房节能降耗的宣传文案。', 'help_chat')" class="w-3 h-3 text-gray-400 opacity-0 group-hover/item:opacity-100 cursor-copy" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                        </div>
+                      </div>
+                    </div>
+                 </div>
+
+                 <div class="group">
+                    <div class="flex items-start space-x-3 mb-2">
+                      <div class="p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-blue-500">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                      </div>
+                      <div>
+                        <div class="text-sm font-bold text-gray-800 dark:text-gray-200">ChatBI 数据分析</div>
+                        <p class="text-[11px] text-gray-500 leading-relaxed">支持自然语言查询数据库。您可以问：</p>
+                      </div>
+                    </div>
+                    <div
+                      class="ml-9 p-2.5 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 relative group/item cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all"
+                    >
+                      <p class="text-[10px] text-gray-600 dark:text-gray-400 italic pr-12" @click="copyToClipboard('查询上海区域所有机房的剩余机柜数', 'help_bi')">“查询上海区域所有机房的剩余机柜数”</p>
+                      <div class="absolute right-2 top-2.5 flex items-center space-x-2">
+                        <button
+                          @click="handleQuickQuestion('查询上海区域所有机房的剩余机柜数'); showHelpModal = false;"
+                          class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/item:opacity-100 hover:scale-105 transition-all flex items-center shadow-sm"
+                        >
+                          🚀 试一试
+                        </button>
+                        <div class="transition-all duration-300">
+                          <svg v-if="copiedId === 'help_bi'" class="w-3.5 h-3.5 text-emerald-500 scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                          <svg v-else @click="copyToClipboard('查询上海区域所有机房的剩余机柜数', 'help_bi')" class="w-3 h-3 text-gray-400 opacity-0 group-hover/item:opacity-100 cursor-copy" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                        </div>
+                      </div>
+                    </div>
+                 </div>
+
+                 <div class="group">
+                    <div class="flex items-start space-x-3 mb-2">
+                      <div class="p-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg text-emerald-500">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5S19.832 5.477 21 6.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+                      </div>
+                      <div>
+                        <div class="text-sm font-bold text-gray-800 dark:text-gray-200">知识库问答</div>
+                        <p class="text-[11px] text-gray-500 leading-relaxed">基于私有文档提供精准问答。您可以问：</p>
+                      </div>
+                    </div>
+                    <div
+                      class="ml-9 p-2.5 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 relative group/item cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all"
+                    >
+                      <p class="text-[10px] text-gray-600 dark:text-gray-400 italic pr-12" @click="copyToClipboard('本周的 CS 和 ops 工单有哪些？', 'help_kb')">“本周的 CS 和 ops 工单有哪些？”</p>
+                      <div class="absolute right-2 top-2.5 flex items-center space-x-2">
+                        <button
+                          @click="handleQuickQuestion('本周的 CS 和 ops 工单有哪些？'); showHelpModal = false;"
+                          class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/item:opacity-100 hover:scale-105 transition-all flex items-center shadow-sm"
+                        >
+                          🚀 试一试
+                        </button>
+                        <div class="transition-all duration-300">
+                          <svg v-if="copiedId === 'help_kb'" class="w-3.5 h-3.5 text-emerald-500 scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                          <svg v-else @click="copyToClipboard('本周的 CS 和 ops 工单有哪些？', 'help_kb')" class="w-3 h-3 text-gray-400 opacity-0 group-hover/item:opacity-100 cursor-copy" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                        </div>
+                      </div>
+                    </div>
+                 </div>
+
+                 <div class="group">
+                    <div class="flex items-start space-x-3 mb-2">
+                      <div class="p-2 bg-amber-50 dark:bg-amber-900/20 rounded-lg text-amber-500">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                      </div>
+                      <div>
+                        <div class="text-sm font-bold text-gray-800 dark:text-gray-200">多步任务执行</div>
+                        <p class="text-[11px] text-gray-500 leading-relaxed">支持处理复杂逻辑。您可以问：</p>
+                      </div>
+                    </div>
+                    <div
+                      class="ml-9 p-2.5 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-200 dark:border-gray-700 relative group/item cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-all"
+                    >
+                      <p class="text-[10px] text-gray-600 dark:text-gray-400 italic pr-12" @click="copyToClipboard('查询最近 1 小时的网络延迟报警，并写一封邮件告知运维团队。', 'help_task')">“查询最近 1 小时的网络延迟报警，并写一封邮件告知运维团队。”</p>
+                      <div class="absolute right-2 top-2.5 flex items-center space-x-2">
+                        <button
+                          @click="handleQuickQuestion('查询最近 1 小时的网络延迟报警，并写一封邮件告知运维团队。'); showHelpModal = false;"
+                          class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/item:opacity-100 hover:scale-105 transition-all flex items-center shadow-sm"
+                        >
+                          🚀 试一试
+                        </button>
+                        <div class="transition-all duration-300">
+                          <svg v-if="copiedId === 'help_task'" class="w-3.5 h-3.5 text-emerald-500 scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                          <svg v-else @click="copyToClipboard('查询最近 1 小时的网络延迟报警，并写一封邮件告知运维团队。', 'help_task')" class="w-3 h-3 text-gray-400 opacity-0 group-hover/item:opacity-100 cursor-copy" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                        </div>
+                      </div>
+                    </div>
+                 </div>
+              </div>
+            </section>
+
+            <!-- Typical Scenarios -->
+            <section>
+              <h4 class="text-xs font-black text-primary uppercase tracking-widest mb-4 flex items-center">
+                 <span class="w-1.5 h-1.5 rounded-full bg-primary mr-2"></span>
+                 常见场景 (点击可复制)
+              </h4>
+              <div class="space-y-2.5">
+                 <div
+                   class="p-3 bg-gradient-to-r from-gray-50 to-white dark:from-gray-900/30 dark:to-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 relative group/scenario cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
+                 >
+                   <div class="text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center mb-1">
+                     <span class="w-1 h-1 bg-gray-400 rounded-full mr-2"></span>
+                     故障排查
+                   </div>
+                   <p class="text-[10px] text-gray-500 pr-16" @click="copyToClipboard('查看 B7 机房最近的所有高压报警，并给出可能的根本原因分析。', 'help_scenario_fault')">“查看 B7 机房最近的所有高压报警，并给出可能的根本原因分析。”</p>
+                   <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center space-x-2">
+                      <button
+                        @click="handleQuickQuestion('查看 B7 机房最近的所有高压报警，并给出可能的根本原因分析。'); showHelpModal = false;"
+                        class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/scenario:opacity-100 hover:scale-105 transition-all shadow-sm"
+                      >
+                        🚀 试一试
+                      </button>
+                      <div class="transition-all duration-300">
+                        <svg v-if="copiedId === 'help_scenario_fault'" class="w-4 h-4 text-emerald-500 scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                        <svg v-else @click="copyToClipboard('查看 B7 机房最近的所有高压报警，并给出可能的根本原因分析。', 'help_scenario_fault')" class="w-3.5 h-3.5 text-gray-400 opacity-0 group-hover/scenario:opacity-100 cursor-copy" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                      </div>
+                   </div>
+                 </div>
+                 <div
+                   class="p-3 bg-gradient-to-r from-gray-50 to-white dark:from-gray-900/30 dark:to-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 relative group/scenario cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
+                 >
+                   <div class="text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center mb-1">
+                     <span class="w-1 h-1 bg-gray-400 rounded-full mr-2"></span>
+                     数据巡检
+                   </div>
+                   <p class="text-[10px] text-gray-500 pr-16" @click="copyToClipboard('统计各机房昨天的监控指标数据量，并进行分析。', 'help_scenario_inspect')">“统计各机房昨天的监控指标数据量，并进行分析。”</p>
+                   <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center space-x-2">
+                      <button
+                        @click="handleQuickQuestion('统计各机房昨天的监控指标数据量，并进行分析。'); showHelpModal = false;"
+                        class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/scenario:opacity-100 hover:scale-105 transition-all shadow-sm"
+                      >
+                        🚀 试一试
+                      </button>
+                      <div class="transition-all duration-300">
+                        <svg v-if="copiedId === 'help_scenario_inspect'" class="w-4 h-4 text-emerald-500 scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                        <svg v-else @click="copyToClipboard('统计各机房昨天的监控指标数据量，并进行分析。', 'help_scenario_inspect')" class="w-3.5 h-3.5 text-gray-400 opacity-0 group-hover/scenario:opacity-100 cursor-copy" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                      </div>
+                   </div>
+                 </div>
+                 <div
+                   class="p-3 bg-gradient-to-r from-gray-50 to-white dark:from-gray-900/30 dark:to-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 relative group/scenario cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
+                 >
+                   <div class="text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center mb-1">
+                     <span class="w-1 h-1 bg-gray-400 rounded-full mr-2"></span>
+                     合规审计
+                   </div>
+                   <p class="text-[10px] text-gray-500 pr-16" @click="copyToClipboard('查找 2024 年 Q4 季度的所有变更审批记录，汇总为表格。', 'help_scenario_audit')">“查找 2024 年 Q4 季度的所有变更审批记录，汇总为表格。”</p>
+                   <div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center space-x-2">
+                      <button
+                        @click="handleQuickQuestion('查找 2024 年 Q4 季度的所有变更审批记录，汇总为表格。'); showHelpModal = false;"
+                        class="px-1.5 py-0.5 bg-primary text-white text-[9px] rounded opacity-0 group-hover/scenario:opacity-100 hover:scale-105 transition-all shadow-sm"
+                      >
+                        🚀 试一试
+                      </button>
+                      <div class="transition-all duration-300">
+                        <svg v-if="copiedId === 'help_scenario_audit'" class="w-4 h-4 text-emerald-500 scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+                        <svg v-else @click="copyToClipboard('查找 2024 年 Q4 季度的所有变更审批记录，汇总为表格。', 'help_scenario_audit')" class="w-3.5 h-3.5 text-gray-400 opacity-0 group-hover/scenario:opacity-100 cursor-copy" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                      </div>
+                   </div>
+                 </div>
+              </div>
+            </section>
+          </div>
+
+          <!-- Footer -->
+          <div class="px-6 py-4 border-t border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex justify-end">
+            <button
+              @click="showHelpModal = false"
+              class="px-6 py-2 bg-primary text-white text-xs font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20"
+              :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }"
+            >
+              我明白了
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+    <!-- Modal: Add Command -->
+    <div
+      v-if="showAddModal"
+      class="absolute inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm p-4"
+      @click.self="showAddModal = false"
+    >
+      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-fade-in-up border border-gray-200 dark:border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between bg-gray-50 dark:bg-gray-800/50">
+          <h3 class="text-sm font-bold text-gray-800 dark:text-gray-200">新建快捷指令</h3>
+          <button @click="showAddModal = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-4 space-y-4">
+          <div>
+            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">显示名称</label>
+            <input v-model="newCommand.label" type="text" placeholder="如：🏢 查机房" class="w-full text-sm bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-primary transition-all dark:text-gray-100 disabled:bg-gray-100" />
+          </div>
+          <div>
+            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">指令内容</label>
+            <textarea v-model="newCommand.command" rows="2" placeholder="输入要发送给 AI 的文字..." class="w-full text-sm bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-primary transition-all dark:text-gray-100 resize-none disabled:bg-gray-100"></textarea>
+          </div>
+          <button @click="addCommand" :disabled="!newCommand.label || !newCommand.command" class="w-full py-2.5 bg-primary text-white text-sm font-bold rounded-lg hover:opacity-90 disabled:opacity-50 transition-all shadow-md shadow-primary/20" :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }">
+            添加指令
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- Modal: Add Command -->
+    <div
+      v-if="showAddModal"
+      class="absolute inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm p-4"
+      @click.self="showAddModal = false"
+    >
+      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-fade-in-up border border-gray-200 dark:border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between bg-gray-50 dark:bg-gray-800/50">
+          <h3 class="text-sm font-bold text-gray-800 dark:text-gray-200">新建快捷指令</h3>
+          <button @click="showAddModal = false" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div class="p-4 space-y-4">
+          <div>
+            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">显示名称</label>
+            <input v-model="newCommand.label" type="text" placeholder="如：🏢 查机房" class="w-full text-sm bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-primary transition-all dark:text-gray-100 disabled:bg-gray-100" />
+          </div>
+          <div>
+            <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1">指令内容</label>
+            <textarea v-model="newCommand.command" rows="2" placeholder="输入要发送给 AI 的文字..." class="w-full text-sm bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-primary transition-all dark:text-gray-100 resize-none disabled:bg-gray-100"></textarea>
+          </div>
+          <button @click="addCommand" :disabled="!newCommand.label || !newCommand.command" class="w-full py-2.5 bg-primary text-white text-sm font-bold rounded-lg hover:opacity-90 disabled:opacity-50 transition-all shadow-md shadow-primary/20" :style="{ backgroundColor: 'var(--primary-color, #1677ff)' }">
+            添加指令
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <ChatModelCallStatsModal
+      :visible="showStatsModal"
+      :loading="loadingStats"
+      :stats="currentStats"
+      :expanded="expandedStats"
+      @close="showStatsModal = false"
+      @toggle="toggleStatExpand"
+    />
+    <DatasetPortalDrawer
+      v-model="showPortalDrawer"
+      v-model:keep-open-on-question="portalKeepOpenOnQuestion"
+      v-model:pinned="portalPinned"
+      v-model:drawer-width="portalDrawerWidthReactive"
+      :payload="scopedPortalNavigationPayload"
+      :project-resource-scope="projectSessionHasDatasetScope ? '仅显示当前项目会话已挂载的数据集' : ''"
+      :mountable-datasets="resourceOptions.datasets"
+      :active-metadata-dataset-ids="activeMetadataDatasetIds"
+      :session-mounted-dataset-ids="sessionMountedMetadataDatasetIds"
+      :initial-loading="portalLoading && !portalNavigationPayload"
+      :background-refreshing="portalBackgroundRefreshing"
+      :focus-saved-report-request="savedReportFocusRequest"
+      @quick-question="handlePortalQuickQuestion"
+      @record-question-click="(payload) => recordDatasetMenuQuestionClick(scopedPortalNavigationPayload, payload)"
+      @clear-question-click="(payload) => clearDatasetMenuQuestionClick(scopedPortalNavigationPayload, payload)"
+      @toggle-metadata-dataset="(datasetId) => toggleMetadataDatasetActive(datasetId, chatInputRef, resourceOptions.datasets)"
+      @pin-metadata-dataset="pinMetadataDatasetToSession"
+      @unpin-metadata-dataset="unpinMetadataDatasetFromSession"
+      @refresh="refreshPortalNavigation"
+      @execute-saved-report="handleExecuteSavedReport"
+      @edit-saved-report="openEditReportModal"
+      @open-full-page="openFullDataPortal"
+    />
+
+    <!-- TraceLogViewer -->
+    <TraceLogViewer
+      :trace-id="embedTraceId"
+      :visible="showEmbedTrace"
+      @close="showEmbedTrace = false"
+    />
+    <ChatBIMonitorDialog
+      :open="chatbiMonitorDialogOpen"
+      :conversation-id="conversationId"
+      :result-id="chatbiMonitorResultId"
+      @close="chatbiMonitorDialogOpen = false"
+      @created="handleChatBIMonitorCreated"
+    />
+    <BrowserPanel
+      :visible="browserPanelVisible"
+      :loading="browserPanelOpening || (browserPanelVisible && !browserSessionId)"
+      :refresh-signal="browserRefreshSignal"
+      :session-id="browserSessionId"
+      :viewer-token="browserViewerToken"
+      :environment-error="browserEnvironmentError"
+      :auth-token="config.token"
+      :approval-mode="browserApprovalMode"
+      v-model:pinned="browserPinned"
+      v-model:panel-width="browserPanelWidthReactive"
+      @close="closeBrowserPanel"
+      @close-session="closeBrowserSession"
+      @retry="openBrowserPanel"
+      @update:approval-mode="updateBrowserApprovalMode"
+      @ask-ai-crop="handleBrowserCropAskAi"
+    />
+    <WebPreviewPanel
+      :visible="webPreviewVisible"
+      :url="webPreviewUrl"
+      :pinned-dock-right="webPreviewDockRightPx"
+      v-model:pinned="webPreviewPinned"
+      v-model:panel-width="webPreviewPanelWidthReactive"
+      @close="closeWebPreviewPanel"
+    />
+    <!-- Awaiting host INIT_CONFIG (strict/debug mode) -->
+    <div
+      v-if="isAwaitingHostInitConfig"
+      class="absolute inset-0 z-[60] flex flex-col overflow-hidden"
+      data-testid="embed-awaiting-init"
+    >
+      <!-- 背景骨架：让用户隐约看出这里将是一个对话界面（纯装饰，不参与交互） -->
+      <div
+        class="flex-1 flex flex-col space-y-6 px-3 sm:px-4 pt-3 sm:pt-4 pb-3"
+        aria-hidden="true"
+        data-testid="embed-awaiting-skeleton"
+      >
+        <div v-for="i in 3" :key="i" class="flex items-start space-x-3">
+          <div class="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+          <div class="flex-1 space-y-2">
+            <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded w-3/4 animate-pulse"></div>
+            <div class="h-4 bg-gray-100 dark:bg-gray-800 rounded w-1/2 animate-pulse"></div>
+          </div>
+        </div>
+        <!-- 底部输入框轮廓：一眼看出这里将是一个对话界面 -->
+        <div class="mt-auto h-11 rounded-xl bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+      </div>
+
+      <!-- 半透明遮罩：骨架若隐若现，同时整层吃掉点击，避免凭据落定前误操作 -->
+      <div
+        class="absolute inset-0 flex flex-col items-center justify-center bg-white/70 dark:bg-gray-900/80 backdrop-blur-[2px] p-6 text-center"
+        data-testid="embed-awaiting-mask"
+      >
+        <div class="p-4 bg-blue-50 dark:bg-blue-900/10 rounded-full mb-4">
+          <svg
+            class="w-12 h-12 text-blue-500 animate-spin"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="3"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+            />
+          </svg>
+        </div>
+        <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100 mb-2">
+          {{ hostInitNotice.title }}
+        </h3>
+        <p
+          class="text-sm text-gray-500 dark:text-gray-400 max-w-xs leading-relaxed"
+        >
+          {{ hostInitNotice.message }}
+        </p>
+        <p
+          v-if="hostInitNoticeExpired"
+          class="mt-3 text-xs text-gray-400 dark:text-gray-500"
+        >
+          若一直停在这里，可先刷新本页重试。
+        </p>
+      </div>
+    </div>
+    <!-- No Permission Overlay -->
+    <div
+      v-else-if="!hasPermission"
+      class="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white dark:bg-gray-900 p-6 text-center"
+    >
+      <div class="p-4 bg-red-50 dark:bg-red-900/10 rounded-full mb-4">
+        <svg
+          class="w-12 h-12 text-red-500"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="1.5"
+            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+          />
+        </svg>
+      </div>
+      <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100 mb-2">
+        {{ authFailureView.title }}
+      </h3>
+      <p
+        class="text-sm text-gray-500 dark:text-gray-400 max-w-xs leading-relaxed"
+      >
+        {{ authFailureView.message }}
+      </p>
+    </div>
+    <!-- URL agent_id deep-link error -->
+    <div
+      v-else-if="urlAgentAccessError"
+      class="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white dark:bg-gray-900 p-6 text-center"
+    >
+      <div
+        class="p-4 rounded-full mb-4"
+        :class="urlAgentAccessError.code === 'AGENT_FORBIDDEN' ? 'bg-amber-50 dark:bg-amber-900/10' : 'bg-red-50 dark:bg-red-900/10'"
+      >
+        <svg
+          class="w-12 h-12"
+          :class="urlAgentAccessError.code === 'AGENT_FORBIDDEN' ? 'text-amber-500' : 'text-red-500'"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="1.5"
+            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+          />
+        </svg>
+      </div>
+      <h3 class="text-lg font-bold text-gray-800 dark:text-gray-100 mb-2">
+        {{ urlAgentAccessError.code === 'AGENT_FORBIDDEN' ? '无权使用该智能体' : '智能体不存在' }}
+      </h3>
+      <p class="text-sm text-gray-500 dark:text-gray-400 max-w-sm leading-relaxed mb-2">
+        {{ urlAgentAccessError.message }}
+      </p>
+      <p v-if="urlAgentAccessError.agentKey" class="text-xs text-gray-400 font-mono mb-4 break-all">
+        agent_id={{ urlAgentAccessError.agentKey }}
+        <template v-if="urlAgentAccessError.displayName">
+          （{{ urlAgentAccessError.displayName }}）
+        </template>
+      </p>
+      <p class="text-xs text-gray-400 max-w-sm leading-relaxed">
+        {{ urlAgentAccessError.code === 'AGENT_FORBIDDEN'
+          ? '请更换有权限的账号 / Token，或联系管理员开通该智能体。'
+          : '请检查链接中的 agent_id 是否正确，或联系管理员确认智能体配置。' }}
+      </p>
+    </div>
+    </div>
+</template>
+<script setup lang="ts">
+// 一览通独立嵌入页面，后续业务定制在本组件维护。
+defineOptions({ name: "YltEmbedChat" });
+import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed, triggerRef } from "vue";
+import { CommandLineIcon } from "@heroicons/vue/24/outline";
+import { useRouter } from "vue-router";
+import axios from "@/utils/axios";
+import { finalizeConversation } from "@/utils/conversationFinalize";
+import ActiveRunsPopover from "@/components/chat/ActiveRunsPopover.vue";
+import ChatTour from "@/components/embed/ChatTour.vue";
+import { useEmbedTour } from "@/composables/embed/useEmbedTour";
+import { TOUR_STEPS, TOUR_VERSION } from "@/components/embed/tourSteps";
+import { createActiveRunsController, type ActiveRunItem } from "@/composables/chat/useActiveRuns";
+import { cancelConversationRun, cancelConversationRunDetailed } from "@/utils/cancelConversationRun";
+import { createConversationId } from "@/utils/conversationId";
+import { shouldStartConversationHistoryLoad } from "@/utils/conversationHistoryRequest";
+import { isApiSuccess } from "@/utils/apiEnvelope";
+import { isSkillForbidden } from "@/utils/skillForbidden";
+import { planHistorySync, shouldKeepRecoverySync } from "@/utils/runRecoverySync";
+import { computePinnedDrawerLayout } from "@/utils/pinnedDrawerLayout";
+import { planRecoveryCard, type RecoveryCardState } from "@/utils/recoveryCard";
+import {
+  planStreamReplay,
+  resetDraftForReplay,
+  shouldResetDraftBeforeReplay,
+  isDraftBoundToConversation,
+  shouldRebindReplayOnConversationSwitch,
+} from "@/utils/conversationStreamReplay";
+import {
+  buildEmbedStreamSnapshot,
+  isEmbedStreamSnapshotUsable,
+  stripClientStreamErrorSuffix,
+  type EmbedStreamSnapshot,
+} from "@/utils/embedStreamSnapshot";
+import { useToast } from "../composables/useToast";
+import { useTokenQuota } from "../composables/useTokenQuota";
+import { useContextUsage } from "@/composables/useContextUsage";
+import { useContextCompactions } from "@/composables/useContextCompactions";
+import { useSandboxWorkspace } from "@/composables/chat/useSandboxWorkspace";
+import { buildQuotaStatusMarkdown } from "@/utils/quotaDisplay";
+import { useDatasetPortal } from "@/composables/useDatasetPortal";
+import { useDatasetMount } from "@/composables/useDatasetMount";
+import {
+  DATASET_PORTAL_SLASH_COMMAND,
+  DATASET_PORTAL_SYSTEM_COMMAND_ID,
+  isDatasetPortalSlashCommand,
+  KNOWLEDGE_PORTAL_SLASH_COMMAND,
+  KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID,
+  isKnowledgePortalSlashCommand,
+} from "@/constants/datasetPortalCommand";
+import {
+  WORKSPACE_SLASH_COMMAND,
+  WORKSPACE_SYSTEM_COMMAND_ID,
+  isWorkspaceSlashCommand,
+} from "@/constants/workspaceCommand";
+import {
+  MY_ARTIFACTS_SLASH_COMMAND,
+  MY_ARTIFACTS_SYSTEM_COMMAND_ID,
+  isMyArtifactsSlashCommand,
+} from "@/constants/artifactsCommand";
+
+import { useBranding } from "@/composables/useBranding";
+import {
+  buildAgentAvatarIndex,
+  resolveChatAgentAvatar,
+} from "@/utils/agentAvatar";
+import agentAvatarUrl from "@/assets/nanzi-agent-avatar.svg";
+import { isSkillEnabled } from '@/utils/skillEnabled'
+
+// 已加载失败的候选头像地址，避免「全局形象也坏了」时在两层兜底之间来回触发 error 死循环。
+const failedAvatarSrcs = new Set<string>();
+
+const handleAgentAvatarError = (event: Event) => {
+  const target = event.target as HTMLImageElement | null;
+  if (!target) return;
+  failedAvatarSrcs.add(target.getAttribute("src") || target.src);
+  // 单个智能体头像失效时先回落到全局官方形象，再退到内置默认。
+  const candidates = [String(config.agentAvatar || "").trim(), agentAvatarUrl].filter(Boolean);
+  for (const candidate of candidates) {
+    if (!failedAvatarSrcs.has(candidate)) {
+      target.src = candidate;
+      return;
+    }
+  }
+};
+
+const toast = useToast();
+const router = useRouter();
+const openFullDataPortal = () => {
+  if (window.parent !== window) {
+    postMessageToHost({ type: "OPEN_DATA_PORTAL_FULL" });
+    return;
+  }
+  router.push({ path: "/dashboard/personal", query: { tab: "data" } });
+};
+const { branding } = useBranding();
+const {
+  bannerMessage: quotaBannerMessage,
+  isBlocked: quotaIsBlocked,
+  quotaStatus,
+  refreshQuota,
+  ensureCanSend,
+} = useTokenQuota();
+const showToast = toast.showToast;
+const removeToast = toast.removeToast;
+import MessageRenderer from "@/components/MessageRenderer.vue";
+import ToolPermissionCard from "@/components/chat/ToolPermissionCard.vue";
+import GroundingBlockedCard from "@/components/GroundingBlockedCard.vue";
+import BusinessConfirmationCard from "@/components/BusinessConfirmationCard.vue";
+import UserQuestionCard from "@/components/UserQuestionCard.vue";
+import DatasetCapabilityMenu from "@/components/chatbi/DatasetCapabilityMenu.vue";
+import DatasetPortalDrawer from "@/components/chatbi/DatasetPortalDrawer.vue";
+import ChatBIInsightPanel from "@/components/chatbi/ChatBIInsightPanel.vue";
+import ChatBIContinueAnalysis from "@/components/chatbi/ChatBIContinueAnalysis.vue";
+import MobileActionSheet from "@/components/chat/MobileActionSheet.vue";
+import MobileMessageActionsSheet from "@/components/chat/MobileMessageActionsSheet.vue";
+import type { ChatBIInsightAction } from "@/types/chatbiInsight";
+import MessageContinueAnalysis from "@/components/chat/MessageContinueAnalysis.vue";
+import MessageActionMenus from "@/components/chat/MessageActionMenus.vue";
+import ReusableResultNotice from "@/components/chat/ReusableResultNotice.vue";
+import ErrorDetailCard from "@/components/chat/ErrorDetailCard.vue";
+import ChatBIMonitorDialog from "@/components/chatbi/ChatBIMonitorDialog.vue";
+import BrowserPanel from "@/components/embed/BrowserPanel.vue";
+import WebPreviewPanel from "@/components/embed/WebPreviewPanel.vue";
+import { isBrowserOpenableUrl } from "@/utils/messageBrowserLinks";
+import ChatBIMetadataGuide from "@/components/chatbi/ChatBIMetadataGuide.vue";
+import AgentHandoffNotice from "@/components/chat/AgentHandoffNotice.vue";
+import type { ChatBIInsightMeta } from "@/types/chatbiInsight";
+import { applyChatBIInsightEvent } from "@/utils/chatbiInsight";
+import type { ChatBIMetadataGuide as ChatBIMetadataGuidePayload } from "@/types/chatbiMetadataGuide";
+import { applyChatBIMetadataGuideEvent } from "@/utils/chatbiMetadataGuide";
+import type { AgentHandoffNoticeData } from "@/types/agentHandoff";
+import { applyAgentHandoffEvent } from "@/utils/agentHandoff";
+import KnowledgePortalDrawer from "@/components/knowledge/KnowledgePortalDrawer.vue";
+import { useKnowledgePortal } from "@/composables/useKnowledgePortal";
+import CitationPopover from "@/components/CitationPopover.vue";
+import { copyToClipboard as copyTextSecure } from "@/utils/clipboard";
+import {
+  formatTokenUsageAmount,
+  formatTokenUsageTooltip,
+} from "@/utils/tokenFormat";
+import {
+  applyStreamErrorMessage,
+  type StreamErrorDetail,
+} from "@/utils/streamErrorPresentation";
+import RagPreviewDrawer from "@/components/RagPreviewDrawer.vue";
+import ChatHistorySidebar from "@/components/ChatHistorySidebar.vue";
+import {
+  DEFAULT_HISTORY_FILTERS,
+  buildHistoryFilterParams,
+  isDefaultHistoryFilters,
+  type ChatHistoryFilters,
+} from "@/composables/chat/useHistoryFilters";
+import { downloadMarkdownFile } from "@/utils/chatSessionExport";
+import ConfirmModal from "@/components/ConfirmModal.vue";
+import ChatSettings from "@/components/embed/ChatSettings.vue";
+import ChatCanvas from "@/components/embed/ChatCanvas.vue";
+import ChatExecutionTimeline from "@/components/chat/ChatExecutionTimeline.vue";
+import ChatTodoCard from "@/components/chat/ChatTodoCard.vue";
+import ChatRecoveryCard from "@/components/chat/ChatRecoveryCard.vue";
+import BashEnvBanner from "@/components/chat/BashEnvBanner.vue";
+import DockerTerminalModal from "@/components/chat/DockerTerminalModal.vue";
+import K8sTerminalModal from "@/components/chat/K8sTerminalModal.vue";
+import ChatInput from "@/components/embed/ChatInput.vue";
+import WelcomeDashboard from "@/components/embed/WelcomeDashboard.vue";
+import PersonalResourcesModal from "@/components/embed/PersonalResourcesModal.vue";
+import PortalNotificationBell from "@/components/PortalNotificationBell.vue";
+import WorkspaceBrowserDrawer from "@/components/embed/WorkspaceBrowserDrawer.vue";
+import MyArtifactsDrawer from "@/components/embed/MyArtifactsDrawer.vue";
+import MemoryBrowserDrawer from "@/components/embed/MemoryBrowserDrawer.vue";
+import { useWorkbenchHome } from "@/composables/useWorkbenchHome";
+import { resolveGeneratedFileHref } from "@/utils/generatedFileUrl";
+import { artifactApi } from "@/api/artifact";
+import {
+  personalResourceFallbackItems,
+  personalResourcePlaceholderItems,
+  filterEmbedWelcomePersonalResources,
+  isInboxPersonalResource,
+  type PersonalResourceTab,
+} from "@/constants/personalResources";
+import type { SavedReportOpenRequest } from "@/utils/savedReportOpenProtocol";
+import SkillCreatedBanner from "@/components/chat/SkillCreatedBanner.vue";
+import {
+  createSkillNotifyGate,
+  parseLatestSkillCreatedMarker,
+  type SkillCreatedInfo,
+} from "@/utils/skillCreated";
+import AttachmentImageThumb from "@/components/embed/AttachmentImageThumb.vue";
+import SessionResourceScopeBar from "@/components/embed/SessionResourceScopeBar.vue";
+import ResourceScopeModal from "@/components/embed/ResourceScopeModal.vue";
+import { isImageAttachment } from "@/utils/attachmentImages";
+import { isDirectRenderableUrl, resolvePublicUploadsPreviewUrl } from "@/utils/workspaceFilePreview";
+import TraceLogViewer from "@/components/TraceLogViewer.vue";
+import ChatModelCallStatsModal from "@/components/chat/ChatModelCallStatsModal.vue";
+import DataPortalReportCreateModal from "@/components/data-portal/DataPortalReportCreateModal.vue";
+import SavedReportRunModal from "@/components/chat/SavedReportRunModal.vue";
+import {
+  sanitizeStreamContent,
+  stripInternalContextBlocks,
+} from "@/utils/streamContentSanitize";
+import { normalizeAgentSwitchCommand } from "@/utils/agentSwitchCommands";
+import { createSseLineParser } from "@/utils/chartRenderer";
+import { modelApi, type AIModel, type ReasoningEffort } from "@/api/model";
+import { resolveChatModelSwitch } from "@/utils/modelSelect";
+import {
+  type TurnType,
+} from "@/utils/turnLogDisplay";
+import {
+  buildSkillFlowBadges,
+  summarizeSkillFlowBadges,
+  type SkillFlowBadge,
+} from "@/utils/skillFlowBadges";
+import {
+  canSaveGoldenReportFromMessage,
+  resolveSavableSqlFromMessage,
+} from "@/utils/toolLogDisplay";
+import {
+  deriveSavedReportDescription,
+  deriveSavedReportTagsInput,
+  deriveSavedReportTitle,
+  parseRequirementAnalysisFromMessage,
+  resolveSavedReportSourceContext,
+} from "@/utils/savedReportDefaults";
+import {
+  buildSavedReportRunParams,
+  composeSavedReportExecuteMarkdown,
+  detectSavedReportDateTemplate,
+  extractColumnMetaFromAgentMessage,
+  extractSavedReportExecuteErrorMessage,
+  mergeSavedReportAnalysisIntoResult,
+  todayDateString,
+  todayMonthString,
+} from "@/composables/chat/useSavedReportWorkflow";
+import { useWorkspaceCanvas } from "@/composables/chat/useWorkspaceCanvas";
+import { createChatSendGate } from "@/composables/chat/useChatSendGate";
+import { useConversationRunStatus } from "@/composables/chat/useConversationRunStatus";
+import {
+  RUN_STATUS_NUDGE_INTERVAL_MS,
+  shouldContinueRunStatusNudge,
+} from "@/utils/runStatusConvergence";
+import { createClientRequestId } from "@/utils/clientRequestId";
+import {
+  USER_MESSAGE_CONTEXT_DIVIDER,
+  splitUserMessageContent,
+  useChatAttachments,
+} from "@/composables/chat/useChatAttachments";
+import { splitHistoryByPin } from "@/composables/chat/useChatHistoryGroups";
+import { usePinnedConversations } from "@/composables/chat/usePinnedConversations";
+import {
+  applyStreamTraceId,
+  appendAssistantBodyDelta,
+  dispatchAgentscopeStreamEvent,
+  formatExternalExecutionStatus,
+  resolveStreamLogDurationMs,
+  finalizeAllPendingStreamLogs,
+  markStalePendingStreamLogs,
+  mergeStreamCitations,
+  resumeExternalExecutionStream,
+  syncProcessTimelineLog,
+  type PendingExternalExecution,
+  type PendingToolPermission,
+  type GroundingBlockedAction,
+  type GroundingBlockedPayload,
+} from "@/utils/agentscopeSseHandlers";
+import { hydrateHistoryProcessTimeline, settlePendingTimelineSteps, timelineHasPending } from "@/utils/processTimeline";
+import { normalizeSubagentTraceMeta, type SubagentTraceMeta } from "@/utils/subagentTrace";
+import {
+  buildBusinessConfirmationUserMessage,
+  type BusinessConfirmationField,
+  type BusinessConfirmationState,
+} from "@/utils/businessConfirmation";
+import {
+  applyUserQuestionReceipts,
+  buildUserQuestionUserMessage,
+  markUserQuestionTimelineResolved,
+  parseUserQuestionReceipt,
+  userQuestionStatesFromTimeline,
+  type UserQuestionReceipt,
+  type UserQuestionState,
+} from "@/utils/userQuestion";
+// --- Types ---
+interface LogEntry {
+  id: number | string;
+  parent_id?: string | number;
+  name?: string;
+  title: string;
+  details: string;
+  status: "pending" | "success" | "error";
+  error_reason?: string;
+  isExpanded: boolean;
+  isRouter?: boolean;
+  category?: 'router' | 'sql' | 'knowledge' | 'tool' | 'tool_resolution' | 'intent' | 'permission' | 'external' | 'model' | 'agent' | 'context' | 'business_confirmation' | 'user_question' | 'system' | 'default';
+  tool_name?: string;
+  tool_args?: string;
+  tool_summary?: string;
+  model?: string;
+  temperature?: number;
+  tool_result_state?: string;
+  file_metadata?: import("@/utils/processTimeline").FileToolMetadata;
+  resolution_status?: 'disabled' | 'missing' | 'filtered';
+  execution_time_ms?: number | null;
+  elapsed_time_ms?: number | null;
+  started_at?: number | null;
+  subagent?: SubagentTraceMeta;
+  rowFilterApplied?: boolean;
+}
+
+interface SavedReportPayload {
+  id: string;
+  title: string;
+  sql_content: string;
+  mode?: string;
+  sql_template?: string;
+  params_schema?: Array<{ type?: string; name?: string; label?: string; default?: any; required?: boolean; options?: any[] }>;
+  default_params?: Record<string, any>;
+  analysis_mode?: string;
+  description?: string;
+  tags?: string[];
+}
+
+interface PermissionNotice {
+  row_filter_applied?: boolean;
+  dataset_name?: string;
+  rule_count?: number;
+  message?: string;
+}
+
+interface SkillMeta {
+  id?: string;
+  name: string;
+  description?: string;
+}
+interface ChatFile {
+  type?: string;
+  url: string;
+  filename: string;
+  size: number;
+  ext: string;
+  skillMeta?: SkillMeta;
+  memoryMeta?: any[];
+}
+
+interface ChatSendSnapshot {
+  content: string;
+  files: ChatFile[];
+  clientRequestId: string;
+  groundingAction?: Record<string, unknown>;
+  reusableResultId?: string | null;
+  quickContext?: QuickQuestionContext;
+}
+
+interface ChatSendOverrides {
+  content?: string;
+  files?: ChatFile[];
+  clientRequestId?: string;
+  groundingAction?: Record<string, unknown>;
+  reusableResultId?: string | null;
+  quickContext?: QuickQuestionContext;
+}
+
+interface QuickQuestionContext {
+  source: "chatbi_result";
+  result_id?: string;
+  requires_fresh_data: true;
+}
+
+interface QuickQuestionPayload {
+  question: string;
+  quick_context?: QuickQuestionContext;
+}
+interface DatasetCapabilityQuestion {
+  label: string;
+  query: string;
+  type?: string;
+  click_count?: number;
+  last_clicked_at?: string;
+}
+interface DatasetNavigationPayload {
+  dataset_count?: number;
+  dataset_menu_hash?: string;
+  generated_at?: string;
+  groups?: Array<{
+    id?: string;
+    title: string;
+    summary: string;
+    tags?: string[];
+    questions?: DatasetCapabilityQuestion[];
+    related_data?: Array<{
+      dataset?: string;
+      display_name?: string;
+      tables?: string[];
+      table_descriptions?: Array<{ name: string; description?: string }>;
+      table_physical_names?: Record<string, string>;
+    }>;
+    followups?: DatasetCapabilityQuestion[];
+    updated_at?: string;
+    enabled?: boolean;
+  }>;
+  markdown?: string;
+  is_fallback?: boolean;
+  has_datasets?: boolean;
+  from_cache?: boolean;
+  llm_generation_failed?: boolean;
+  llm_error_message?: string | null;
+  refresh_disabled_reason?: string | null;
+  _failed_at?: string;
+}
+interface Message {
+  id: number;
+  trace_id?: string;
+  role: "user" | "agent" | "system";
+  content: string;
+  errorDetail?: StreamErrorDetail;
+  reasoningContent?: string;
+  isReasoningExpanded?: boolean;
+  files?: ChatFile[];
+  logs?: LogEntry[];
+  citations?: any[];
+  /** 历史回放标记：引用详情解析不到时用于区分「已过期」与「加载中」 */
+  isHistory?: boolean;
+  /**
+   * 本端 SSE 读流失败时追加到正文的临时错误后缀。
+   *
+   * 仅用于提示当前界面；写入恢复快照时必须剥离——它不是服务端终态，刷新后由恢复器
+   * 取回真正内容即可。
+   */
+  clientTransportErrorSuffix?: string;
+  isThinking?: boolean;
+  isThoughtExpanded?: boolean;
+  processNarration?: string;
+  processNarrationPending?: string;
+  processTimeline?: import("@/utils/processTimeline").ProcessTimelineItem[];
+  isProcessNarrationExpanded?: boolean;
+  isCitationsExpanded?: boolean;
+  thoughtStartTime?: number;
+  thoughtDuration?: string;
+  thinkingText?: string;
+  agentName?: string;
+  agentDisplayName?: string;
+  agentType?: string;
+  /** 智能体专属头像（历史接口下发）；为空则继承全局官方形象 */
+  agentAvatarUrl?: string;
+  isSavedReportResult?: boolean;
+  turnType?: TurnType | string;
+  hasDataOutput?: boolean;
+  chatbiInsight?: ChatBIInsightMeta;
+  chatbiMetadataGuide?: ChatBIMetadataGuidePayload;
+  agentHandoff?: AgentHandoffNoticeData;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  feedback?: "up" | "down" | null;
+  timestamp?: string;
+  isTimeLabel?: boolean;
+  pendingPermission?: PendingToolPermission;
+  pendingExternalExecution?: PendingExternalExecution;
+  toolResultData?: Record<string, Array<{ block_id?: string; media_type?: string; data?: unknown; url?: string | null }>>;
+  datasetNavigation?: DatasetNavigationPayload;
+  permissionNotice?: PermissionNotice;
+  groundingBlocked?: GroundingBlockedPayload;
+  reusableResultStatus?: {
+    status: "saved" | "reused" | "fallback" | string;
+    resultId?: string | null;
+    originName?: string | null;
+  };
+  businessConfirmation?: BusinessConfirmationState;
+  userQuestion?: UserQuestionState;
+  _hasSilentlyRefreshed?: boolean;
+}
+
+const isAgentTimelineMessage = (msg: Message): boolean => {
+  const role = (msg as unknown as { role?: string }).role;
+  return role === "agent" || role === "assistant";
+};
+
+const reusableResultCountByTrace = ref<Record<string, number>>({});
+const currentMessageReusableCount = (msg: Message): number => {
+  const status = msg.reusableResultStatus?.status;
+  const traceResultCount = msg.trace_id ? reusableResultCountByTrace.value[msg.trace_id] || 0 : 0;
+  return Math.max(traceResultCount, msg.hasDataOutput || (
+    Boolean(msg.reusableResultStatus?.resultId)
+    && (status === "saved" || status === "reused")
+  ) ? 1 : 0);
+};
+
+// Helper: Check Role
+const checkRole = (msg: Message, role: string): boolean => {
+  return msg.role === role;
+};
+// Helper: Format Timestamp for Separators
+const formatTimeLabel = (isoStr: string): string => {
+  try {
+    const date = new Date(isoStr);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const oneDay = 24 * 60 * 60 * 1000;
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    if (diff < oneDay && date.getDate() === now.getDate()) {
+      return `${hours}:${minutes}`;
+    }
+    const yesterday = new Date(now.getTime() - oneDay);
+    if (date.getDate() === yesterday.getDate() && date.getMonth() === yesterday.getMonth()) {
+       return `昨天 ${hours}:${minutes}`;
+    }
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${month}-${day} ${hours}:${minutes}`;
+  } catch (e) { return ""; }
+};
+
+function visibleStreamBody(msg: Message): string {
+  return msg.role === "agent"
+    ? stripInternalContextBlocks(msg.content || "")
+    : (msg.content || "");
+}
+
+function getSkillFlowBadgesForMessage(msg: Message, allMessages: Message[]): SkillFlowBadge[] {
+  if (msg.role !== 'agent') return [];
+  const idx = allMessages.findIndex(m => m.id === msg.id);
+  if (idx <= 0) return [];
+  let files: ChatFile[] = [];
+  for (let i = idx - 1; i >= 0; i--) {
+    const prev = allMessages[i];
+    if (!prev) continue;
+    if (prev.role === 'user') {
+      files = prev.files || [];
+      break;
+    }
+  }
+  return buildSkillFlowBadges(files, msg.logs || []);
+}
+
+// Helper: Format Timestamp for Bubbles (Smart Date)
+const formatBubbleTime = (isoStr: string): string => {
+  if (!isoStr) return "";
+  try {
+    const date = new Date(isoStr);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const oneDay = 24 * 60 * 60 * 1000;
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    // Today
+    if (diff < oneDay && date.getDate() === now.getDate()) {
+      return `${hours}:${minutes}`;
+    }
+    // Yesterday
+    const yesterday = new Date(now.getTime() - oneDay);
+    if (date.getDate() === yesterday.getDate() && date.getMonth() === yesterday.getMonth()) {
+       return `昨天 ${hours}:${minutes}`;
+    }
+    // Older
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${month}-${day} ${hours}:${minutes}`;
+  } catch(e) { return ""; }
+};
+
+const getMessageTokenAmount = (msg: any): string => {
+  const total = msg?.total_tokens ?? ((msg?.prompt_tokens || 0) + (msg?.completion_tokens || 0));
+  return formatTokenUsageAmount(total);
+};
+
+const getMessageTokenTooltip = (msg: any): string => {
+  return formatTokenUsageTooltip(msg?.prompt_tokens, msg?.completion_tokens, msg?.total_tokens);
+};
+// --- State ---
+const messages = ref<Message[]>([]);
+const lastAgentMessage = computed(() => {
+    return [...messages.value].reverse().find(m => m.role === 'agent' && !m.isTimeLabel);
+});
+const displayMessages = computed(() => {
+  const raw = messages.value;
+  if (!raw || raw.length === 0) return [];
+  const result: Message[] = [];
+  let lastTime = 0;
+  const tryAddDateLabel = (currMsg: Message) => {
+    if (currMsg.timestamp) {
+      const currTime = new Date(currMsg.timestamp).getTime();
+      // 5 minutes threshold
+      if (currTime - lastTime > 300000) {
+         result.push({
+           id: -currTime,
+           role: 'system',
+           content: formatTimeLabel(currMsg.timestamp),
+           isTimeLabel: true
+         });
+         lastTime = currTime;
+      }
+    }
+  };
+  if (raw[0]) {
+    tryAddDateLabel(raw[0]);
+    result.push(raw[0]);
+    if (raw[0].timestamp) lastTime = new Date(raw[0].timestamp).getTime();
+  }
+  for (let i = 1; i < raw.length; i++) {
+    const prev = raw[i - 1];
+    const curr = raw[i];
+    if (prev && curr && curr.role === prev.role && curr.content === prev.content && !curr.isThinking) {
+      continue;
+    }
+    if (curr) {
+       tryAddDateLabel(curr);
+       result.push(curr);
+       if (curr.timestamp) lastTime = new Date(curr.timestamp).getTime();
+    }
+  }
+  return result;
+});
+const currentExpertAgent = computed(() => {
+  if (config.routingMode === 'expert' && config.expertAgentId) {
+    return (
+      allowedAgents.value.find(a => a.id === config.expertAgentId)
+      || (pinnedAgentId.value === config.expertAgentId ? pinnedAgent.value : null)
+      || null
+    );
+  }
+  return null;
+});
+/** 与发消息时 agent_id 一致；用于判断是否托管引擎（RAGFlow / OpenClaw）以隐藏点赞踩 */
+const effectiveEmbedChatAgentId = computed(() => {
+  if (config.routingMode === "expert" && config.expertAgentId) {
+    return config.expertAgentId;
+  }
+  return config.overrideAgentId || config.agentId || "";
+});
+const hideEmbedLikeDislike = computed(() => {
+  const id = effectiveEmbedChatAgentId.value;
+  if (!id) return false;
+  const ag = allowedAgents.value.find((a) => a.id === id);
+  const t = ag?.engine_type;
+  return t === "RAGFLOW" || t === "OPENCLAW";
+});
+/**
+ * 当前生效智能体对象：模型切换开关与「已发布版本编排模型名」共用同一次查找，
+ * 避免两处选中不同智能体（pinnedAgent 是 URL 深链锁定时的兜底来源）。
+ */
+const effectiveChatAgent = computed(() => {
+  const id = String(effectiveEmbedChatAgentId.value || "");
+  if (!id) return null;
+  return allowedAgents.value.find((item: any) => String(item.id) === id)
+    || (pinnedAgent.value && String(pinnedAgent.value.id) === id ? pinnedAgent.value : null);
+});
+/**
+ * 当前生效智能体的已发布版本是否允许在输入框手动切换模型。
+ * 未选择智能体、无已发布版本或历史数据未配置该字段时一律按「允许」处理。
+ */
+const manualModelSwitchAllowed = computed(() => effectiveChatAgent.value?.allow_model_switch !== false);
+/** 实际生效的模型覆盖：智能体版本禁止手动切换时忽略输入框遗留的覆盖值 */
+const effectiveOverrideModel = computed(() =>
+  manualModelSwitchAllowed.value ? (config.overrideModel || "") : "",
+);
+const chatInputRef = ref<any>(null);
+const userInput = ref("");
+// ---- 功能引导（EmbedChat Feature Tour） ----
+const tour = useEmbedTour({ isMobile: () => isMobile.value });
+const tourActive = tour.active;
+const tourStepIndex = tour.stepIndex;
+const tourRef = ref<any>(null);
+/** 只有引导自己打开过上下文弹层，退出时才替用户收起 */
+const tourOwnsContextPanel = ref(false);
+const tourCompletedAt = computed(() => tour.state.value.completed_at);
+
+const handleTourEnter = async (_index: number, step: { opensContextPanel?: boolean }) => {
+  if (!step?.opensContextPanel) return;
+  const opened = await chatInputRef.value?.openContextUsageForTour?.();
+  if (opened) tourOwnsContextPanel.value = true;
+  await nextTick();
+  // 弹层渲染完成后再让引导重新测量锚点
+  window.setTimeout(() => tourRef.value?.refresh?.(), 80);
+};
+
+const handleTourLeave = () => {
+  if (!tourOwnsContextPanel.value) return;
+  chatInputRef.value?.closeContextUsageForTour?.();
+  tourOwnsContextPanel.value = false;
+};
+
+/** ChatTour 内部换步 → 同步状态机，断点与「跳过」记录的才是真实进度 */
+const handleTourChange = (index: number) => {
+  tour.goTo(index);
+};
+
+const handleTourMissing = (index: number) => {
+  window.setTimeout(() => {
+    if (!tour.active.value) return;
+    if (tour.stepIndex.value !== index) return;
+    if (index >= TOUR_STEPS.length - 1) {
+      tour.finish();
+      return;
+    }
+    // 必须由 ChatTour 自己前进：索引在组件内部，父组件直接改状态机不会驱动界面
+    tourRef.value?.goNext?.();
+  }, 80);
+};
+
+/** 等某个引导锚点真正出现（initChat 是异步的，固定延时不够稳） */
+const waitForTourAnchor = async (selector: string, timeout = 1200) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    if (document.querySelector(selector)) return true;
+    await new Promise((resolve) => window.setTimeout(resolve, 60));
+  }
+  return false;
+};
+
+/**
+ * 引导要讲欢迎卡片，而卡片只在空会话渲染。
+ * 当前内容本来就会保存进历史（与「开启新会话」同语义），所以直接开一个空会话，
+ * 不额外弹确认框——页面刚加载时用户基本还没开始输入。
+ */
+const prepareEmptyConversationForTour = async () => {
+  if (messages.value.length === 0) return;
+  startNewConversation();
+  await nextTick();
+  await waitForTourAnchor('[data-tour="welcome-cards"]');
+};
+
+const handleReplayTour = async () => {
+  showSettings.value = false;
+  await nextTick();
+  await prepareEmptyConversationForTour();
+  await nextTick();
+  tour.restart();
+};
+
+// 索引从步骤表派生；万一 id 被改名，兜底到 0（仍然先开空会话）
+const welcomeStepIndex = Math.max(0, TOUR_STEPS.findIndex((step) => step.id === 'welcome-cards'));
+
+// 等权限与首屏渲染稳定后再起播：确实要播、且当前有旧内容时，先开空会话
+let tourBootTimer: number | undefined;
+
+onMounted(() => {
+  tourBootTimer = window.setTimeout(async () => {
+    if (!hasPermission.value) return;
+    // 生成中不打断；下次进入仍是未完成状态，会重新尝试
+    if (isProcessing.value) return;
+    await tour.loadState();
+    if (!tour.shouldAutoPlay()) return;
+    const resumeIndex = tour.state.value.version === TOUR_VERSION ? tour.state.value.step : 0;
+    // 从后面断点继续时不需要欢迎卡片，也就不动当前会话（索引从步骤表派生，加步骤不会漂）
+    if (resumeIndex <= welcomeStepIndex) {
+      await prepareEmptyConversationForTour();
+    }
+    void tour.resumeOrStart(true);
+  }, 900);
+});
+
+onUnmounted(() => {
+  if (tourBootTimer) window.clearTimeout(tourBootTimer);
+});
+const showWorkspaceDrawer = ref(false);
+const showMyArtifactsDrawer = ref(false);
+const myArtifactsInitialTab = ref<"files" | "reusable">("files");
+const selectedReusableResultId = ref<string | null>(null);
+const focusedReusableResultId = ref<string | null>(null);
+const focusedOutputTraceId = ref<string | null>(null);
+const reusedReusableResultId = ref<string | null>(null);
+const workspaceDrawerRef = ref<{ refreshDirectory: (path?: string) => Promise<void> } | null>(null);
+
+const readStoredBoolean = (key: string, defaultWhenUnset: boolean) => {
+  const stored = localStorage.getItem(key);
+  if (stored === "1") return true;
+  if (stored === "0") return false;
+  return defaultWhenUnset;
+};
+
+const workspaceKeepOpenOnSelect = ref(
+  readStoredBoolean(
+    "embed_workspace_keep_open",
+    typeof window !== "undefined" &&
+      !window.matchMedia("(max-width: 639px)").matches,
+  ),
+);
+watch(workspaceKeepOpenOnSelect, (val) => {
+  localStorage.setItem("embed_workspace_keep_open", val ? "1" : "0");
+});
+
+const workspacePinned = ref(
+  typeof window !== "undefined" &&
+    !window.matchMedia("(max-width: 639px)").matches &&
+    readStoredBoolean("embed_workspace_pinned", true),
+);
+watch(workspacePinned, (val) => {
+  // 窄屏下抽屉会强制取消钉住，属于临时状态，不覆盖桌面端的钉住偏好
+  if (window.matchMedia("(max-width: 639px)").matches) return;
+  localStorage.setItem("embed_workspace_pinned", val ? "1" : "0");
+});
+
+/** 桌面端打开工作空间时强制钉住；用户仍可手动取消钉住 */
+const openWorkspaceDrawer = () => {
+  if (!window.matchMedia("(max-width: 639px)").matches) {
+    workspacePinned.value = true;
+  }
+  showWorkspaceDrawer.value = true;
+};
+const toggleWorkspaceDrawer = () => {
+  if (showWorkspaceDrawer.value) {
+    showWorkspaceDrawer.value = false;
+    return;
+  }
+  openWorkspaceDrawer();
+};
+
+const toggleMyArtifactsDrawer = () => {
+  if (!showMyArtifactsDrawer.value) {
+    myArtifactsInitialTab.value = "files";
+    focusedReusableResultId.value = null;
+    focusedOutputTraceId.value = null;
+  }
+  showMyArtifactsDrawer.value = !showMyArtifactsDrawer.value;
+};
+
+const openReusableResults = (resultId?: string | null, traceId?: string | null, status?: string | null) => {
+  myArtifactsInitialTab.value = "reusable";
+  focusedReusableResultId.value = resultId || null;
+  focusedOutputTraceId.value = traceId || null;
+  reusedReusableResultId.value = status === "reused" && resultId ? resultId : null;
+  showMyArtifactsDrawer.value = true;
+};
+
+const openMessageArtifacts = (traceId?: string | null) => {
+  myArtifactsInitialTab.value = "files";
+  focusedReusableResultId.value = null;
+  focusedOutputTraceId.value = traceId || null;
+  reusedReusableResultId.value = null;
+  showMyArtifactsDrawer.value = true;
+};
+
+/**
+ * 「我的产出」抽屉里的预览动作。
+ *
+ * 产物地址必须先用 resolveGeneratedFileHref 绑到当前页面 Host：跨站嵌入时
+ * download_url 里是配置的 APP_PUBLIC_URL，当相对路径用会打到宿主域而 404。
+ * 画布状态归 useWorkspaceCanvas，抽屉只 emit 意图。
+ *
+ * 画布是右侧钉住，所以预览成功后要收起抽屉（否则两者在同一侧互挤）；
+ * 但**失败时不收**——取内容 404 或网络错误时保住抽屉，用户还能改点「下载」。
+ */
+const previewArtifactInCanvas = async (item: { download_url: string; filename: string }) => {
+  const opened = await handleGeneratedFilePreview({
+    url: resolveGeneratedFileHref(item.download_url),
+    name: item.filename,
+  });
+  if (opened) showMyArtifactsDrawer.value = false;
+};
+
+/**
+ * 消息正文里的产物链接预览。
+ *
+ * 与抽屉走**同一条链路**（`handleGeneratedFilePreview`：绑当前 Host → 按扩展名取内容或
+ * 直接用 URL → 右侧钉住画布），差别只在于正文点击时抽屉没开，不需要收起。
+ * 没有这条链路时，`.md`/`.txt`/`.json`/代码等文本类产物在正文里点击会直接下载，
+ * 而同样的文件在抽屉里能预览 —— 行为不一致。
+ */
+const previewGeneratedFileInCanvas = (payload: { url: string; name: string }) => {
+  void handleGeneratedFilePreview({
+    url: resolveGeneratedFileHref(payload.url),
+    name: payload.name,
+  });
+};
+
+const selectReusableResult = (result: { result_id: string; origin_name?: string }) => {
+  selectedReusableResultId.value = result.result_id;
+  focusedReusableResultId.value = result.result_id;
+  showMyArtifactsDrawer.value = false;
+  showToast(
+    `已选择${result.origin_name ? `「${result.origin_name}」` : "该结果"}，下一轮将优先复用`,
+    "success",
+  );
+};
+
+const showMemoryDrawer = ref(false);
+
+const memoryKeepOpenOnSelect = ref(
+  readStoredBoolean(
+    "embed_memory_keep_open",
+    typeof window !== "undefined" &&
+      !window.matchMedia("(max-width: 639px)").matches,
+  ),
+);
+watch(memoryKeepOpenOnSelect, (val) => {
+  localStorage.setItem("embed_memory_keep_open", val ? "1" : "0");
+});
+
+const memoryPinned = ref(
+  typeof window !== "undefined" &&
+    !window.matchMedia("(max-width: 639px)").matches &&
+    readStoredBoolean("embed_memory_pinned", false),
+);
+watch(memoryPinned, (val) => {
+  localStorage.setItem("embed_memory_pinned", val ? "1" : "0");
+});
+
+const attachedMemoryConversationIds = computed(() => {
+  const memFile = chatInputRef.value?.uploadedFiles?.find((f: any) => f.type === "memory");
+  return memFile?.url ? String(memFile.url) : "";
+});
+
+const showStatsModal = ref(false);
+const loadingStats = ref(false);
+const currentStats = ref<any[]>([]);
+const expandedStats = ref<Record<string, boolean>>({});
+
+const toggleStatExpand = (callIndex: number) => {
+  expandedStats.value[callIndex] = !expandedStats.value[callIndex];
+};
+
+watch(showStatsModal, (newVal) => {
+  if (!newVal) {
+    expandedStats.value = {};
+  }
+});
+
+/** 知识库问答专家候选（capability 或名称命中） */
+const listKnowledgeExpertAgents = () => {
+  return allowedAgents.value.filter((a: any) => {
+    const capabilities = Array.isArray(a?.capabilities) ? a.capabilities : [];
+    if (capabilities.includes("knowledge_base")) return true;
+    const name = String(a?.name || "").toLowerCase();
+    const label = String(a?.display_name || "");
+    return (
+      name === "knowledge-base" ||
+      name.includes("knowledge") ||
+      label.includes("知识库")
+    );
+  });
+};
+
+/** 仅当恰好 1 个知识库智能体时返回，多个则不自动锁定 */
+const resolveKnowledgeExpertAgent = () => {
+  const matches = listKnowledgeExpertAgents();
+  return matches.length === 1 ? matches[0] : undefined;
+};
+
+const buildKnowledgeBaseAttachmentHint = (datasetIdLine: string) => {
+  const expert = resolveKnowledgeExpertAgent();
+  const expertHint = expert
+    ? `本次为知识库查询，须优先由知识库专家「${expert.display_name || expert.name}」处理（agent_name: ${expert.name}，agent_id: ${expert.id}）；自动路由时必须选择该专家，不得分发给 ChatBI、运维或其他专家。`
+    : `本次为知识库查询，须优先选择知识库专家（agent_name: knowledge-base）；自动路由时不得分发给 ChatBI、运维或其他专家。`;
+
+  return `${expertHint}\n\n【必须执行】${datasetIdLine}`;
+};
+
+const buildDatasetAttachmentHint = (datasetIdLine: string) => {
+  const expert = findUniqueDataQueryAgent();
+  const expertHint = expert
+    ? `本次为数据查询与分析，须优先由数据查询专家「${expert.display_name || expert.name}」（agent_name: ${expert.name}，agent_id: ${expert.id}）处理；自动路由时必须选择该专家，不得分发给主助手或其他专家。`
+    : `本次为数据查询与分析，须优先选择具有数据查询能力的专家智能体处理；自动路由时不得分发给其他无关专家。`;
+
+  return `${expertHint}\n\n【必须执行】${datasetIdLine}`;
+};
+
+const { appendAttachmentContext } = useChatAttachments({
+  buildKnowledgeBaseAttachmentHint,
+  buildDatasetAttachmentHint,
+});
+
+const handleSelectLocalFs = (payload: { type: 'local_file' | 'local_dir'; path: string; name: string; size: number; ext: string }) => {
+  // 入列与去重统一在 ChatInput：@ 文件 tab 与工作区抽屉共用同一份逻辑
+  chatInputRef.value?.pushLocalFile?.(payload);
+};
+
+const handleWorkspaceContentSaved = (payload: { path: string }) => {
+  if (showWorkspaceDrawer.value) {
+    void workspaceDrawerRef.value?.refreshDirectory(payload.path);
+  }
+};
+
+const isImageFile = isImageAttachment;
+
+const formatBytes = (bytes: number) => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+
+const resolveReqContent = (msg: Message) => {
+  let reqContent = msg.content || "";
+  if (msg.role === "user" && msg.files && msg.files.length > 0) {
+    if (!reqContent.includes(USER_MESSAGE_CONTEXT_DIVIDER)) {
+      reqContent = appendAttachmentContext(msg.content, msg.files);
+    }
+  }
+  return reqContent;
+};
+
+/** 收集会话内知识库 dataset ID（输入框附件 + 历史 user 消息附件，追问时继承首轮选择） */
+const collectKnowledgeDatasetIds = (): string[] => {
+  const ids: string[] = [];
+  const pushId = (raw: string) => {
+    const value = String(raw || "").trim();
+    if (value && !ids.includes(value)) ids.push(value);
+  };
+  const uploaded = chatInputRef.value?.uploadedFiles || [];
+  uploaded.forEach((file: any) => {
+    if (file.type === "knowledge_base") pushId(file.url);
+  });
+  const sendable = messages.value.filter((m) => !m.isThinking && (m.content || m.files));
+  sendable.forEach((m) => {
+    if (m.role !== "user") return;
+    m.files?.forEach((file: any) => {
+      if (file.type === "knowledge_base") pushId(file.url);
+    });
+  });
+  return ids;
+};
+
+const isChatContextMessage = (message: Message): boolean => (
+  !message.isThinking &&
+  (message.role === "user" || message.role === "agent") &&
+  Boolean(message.content || message.files?.length)
+);
+
+/** 发给 API 的消息：已有会话只发送当前轮 user，历史由服务端 Redis 提供。 */
+const buildOutboundMessages = () => {
+  const sendable = messages.value.filter(isChatContextMessage);
+  if (conversationId.value) {
+    const latestUser = [...sendable].reverse().find((m) => m.role === "user");
+    if (latestUser) {
+      const msgObj: any = {
+        role: "user",
+        content: resolveReqContent(latestUser),
+      };
+      if (latestUser.files?.length) {
+        msgObj.files = latestUser.files;
+      }
+      return [msgObj];
+    }
+    return [];
+  }
+
+  const lastUserIdx = sendable.reduce(
+    (last, m, i) => (m.role === "user" ? i : last),
+    -1,
+  );
+
+  return sendable.map((m, idx) => {
+    const role = m.role === "agent" ? "assistant" : m.role;
+    if (m.role === "user" && idx !== lastUserIdx) {
+      return {
+        role,
+        content: splitUserMessageContent(m.content || "").userPart,
+      };
+    }
+    const msgObj: any = {
+      role,
+      content: m.role === "user"
+        ? resolveReqContent(m)
+        : stripInternalContextBlocks(m.content || ""),
+    };
+    if (m.role === "user" && m.files?.length) {
+      msgObj.files = m.files;
+    }
+    return msgObj;
+  });
+};
+
+const embedTraceId = ref("");
+const showEmbedTrace = ref(false);
+const openEmbedTrace = (traceId: string) => {
+  embedTraceId.value = traceId;
+  showEmbedTrace.value = true;
+};
+// @conversation-scoped: isProcessing
+const isProcessing = ref(false);
+// 流式读取是否在途：用于区分「流仍在读」与「流已死但界面还挂着 busy」。
+// @conversation-scoped: streamInFlight
+let streamInFlight = false;
+// 组件是否已卸载：卸载后不再执行流收尾副作用（避免僵尸请求与会话轮询）。
+let embedUnmounted = false;
+const { locked: sendLocked, runExclusive: runSendExclusive } = createChatSendGate();
+const bashBannerEnv = ref<"host" | "docker" | "e2b" | "ssh" | "k8s" | null>(null);
+const bashBannerDismissed = ref(false);
+/**
+ * URL 直传 API Key（兼容模式）提示。
+ *
+ * 存量宿主仍在使用 `/embed/chat?token=<API Key>`，长期密钥会出现在浏览器地址栏、
+ * 历史记录、Referer 与访问日志中。这里在 embed 页顶部提示宿主迁移到 Ticket 模式。
+ * 提示只针对「接入方式」，与凭据是否有效无关，因此标记发生在校验之前。
+ *
+ * 注：清除地址栏**必须以「刷新有凭据可依」为前提**，统一入口是
+ * `maybeStripUrlAfterSessionReady()`——判定本 tab 已把短期会话令牌落到 sessionStorage，
+ * 或本次响应确实下发了 `embed_session` Cookie。两条链路（`user_apikey` 经 header 传入
+ * 凭据、ticket 兑换成功）都会建立会话并下发该 Cookie。若在凭据落地之前就清除，URL 里
+ * 的凭据是唯一来源，刷新会立即失效（曾踩过一次）。注意跨站 iframe 下 `embed_session`
+ * 是 SameSite=lax、根本不会被发送，因此 sessionStorage 才是主要依据。
+ */
+const usesLegacyUrlToken = ref(false);
+
+/**
+ * 嵌入会话的**本 tab + 本实例**持久化（sessionStorage）。
+ *
+ * 为什么需要它：先前只把换发来的 `emb_ses_` 放在内存 + axios header，刷新后内存清空，
+ * 只能回头依赖 `embed_session` Cookie。而该 Cookie 是 `SameSite=lax`，**在跨站第三方
+ * iframe 里不会随请求发送**（`/embed/` 恰恰以 `frame-ancestors *` 支持跨站嵌入），
+ * 于是「清掉 URL 里的凭据 → 刷新即失效」；同时 Cookie 是整浏览器一个槽，多个嵌入实例
+ * 会互相覆盖，刷新后可能变成另一个用户。
+ *
+ * ⚠️ 隔离粒度必须说准：sessionStorage 的边界是 **tab + origin**，不是 iframe。
+ * 同一 tab 里的多个**同源** iframe 共享同一个 sessionStorage。平台明确支持一页多实例
+ * （`instance_id` 正是为此而生：会话 ID、消息归属都按它分桶），因此存储键也必须带
+ * `instance_id`——否则同页两个实例会互相覆盖，A 刷新后读到 B 的令牌，照样串号。
+ * 相比 Cookie（整浏览器共享）它至少把范围缩到了单个 tab，多标签页不再互相干扰。
+ *
+ * 它确实是 JS 可读的，因此这里权衡后**只放短期、可吊销的会话令牌**，绝不放长期
+ * API Key——真实 Key 用后即弃，URL 里的凭据也才敢清。长期 Key 依然不落任何 localStorage。
+ */
+const EMBED_SESSION_STORAGE_PREFIX = "nzi_embed_session_token";
+
+/** 无 instance_id 时的历史键名（旧版本写入，无法区分实例，只清理、不再读写）。 */
+const EMBED_SESSION_STORAGE_LEGACY_KEY = EMBED_SESSION_STORAGE_PREFIX;
+
+/** 当前实例的存储键：按 instance_id 分桶，与 conversationStorageKey 的隔离口径一致。 */
+const embedSessionStorageKey = (): string => {
+  const instanceId = normalizeEmbedInstanceId(config.instanceId);
+  return instanceId
+    ? `${EMBED_SESSION_STORAGE_PREFIX}:${encodeURIComponent(instanceId)}`
+    : EMBED_SESSION_STORAGE_PREFIX;
+};
+
+/** 把会话令牌持久化到本 tab 的本实例；失败（隐私模式/存储被禁）返回 false，
+ * 调用方据此决定是否清 URL。 */
+const persistEmbedSession = (token: string): boolean => {
+  if (!token) return false;
+  try {
+    const key = embedSessionStorageKey();
+    sessionStorage.setItem(key, token);
+    // 顺手清掉无实例维度的旧键：它无法区分实例，留着只会被下一次读取误用。
+    if (key !== EMBED_SESSION_STORAGE_LEGACY_KEY) {
+      sessionStorage.removeItem(EMBED_SESSION_STORAGE_LEGACY_KEY);
+    }
+    return true;
+  } catch (e) {
+    console.warn("[Auth] Failed to persist embed session to sessionStorage:", e);
+    return false;
+  }
+};
+
+/** 读取本实例的嵌入会话令牌；无则返回空串。
+ *
+ * 刻意**不回退**读取无实例维度的旧键：那正是多实例串号的来源，宁可当作无凭据。 */
+const readEmbedSession = (): string => {
+  try {
+    return (sessionStorage.getItem(embedSessionStorageKey()) || "").trim();
+  } catch {
+    return "";
+  }
+};
+
+/** 清除本实例的嵌入会话令牌（会话失效或登出时调用）。 */
+const clearEmbedSession = (): void => {
+  try {
+    sessionStorage.removeItem(embedSessionStorageKey());
+    sessionStorage.removeItem(EMBED_SESSION_STORAGE_LEGACY_KEY);
+  } catch {
+    /* 存储不可用时无需处理 */
+  }
+};
+
+/** 从地址栏移除凭据（长期 Key 或一次性 Ticket），避免其残留在浏览器历史、录屏与
+ * 分享链接中。
+ *
+ * ⚠️ **只能在确认「刷新有凭据可依」后调用**，即满足以下任一条：
+ *   - 本 tab 已把会话令牌写入 sessionStorage（`persistEmbedSession` 返回真）——
+ *     跨站 iframe 同样成立，这是主要的判定依据；
+ *   - 后端确认已下发 `embed_session` Cookie（`session_cookie_issued`）——同站场景。
+ * 判定的统一入口是 `maybeStripUrlAfterSessionReady()`，不要直接调用本函数。
+ * 若在凭据落地之前就清除，URL 里的凭据是唯一来源，刷新会立即失效（曾踩过一次）。
+ *
+ * 只删 token 与 ticket：agent_id / theme / instance_id 等非敏感参数必须原样保留，
+ * 否则会破坏智能体锁定、主题与多实例隔离。
+ *
+ * 局限：仅消除「地址栏与历史」的暴露；服务器访问日志与首次加载的 Referer 在页面
+ * 加载时就已产生，前端无法回收。
+ */
+const stripUrlCredentials = () => {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("token") && !url.searchParams.has("ticket")) return;
+    url.searchParams.delete("token");
+    url.searchParams.delete("ticket");
+    // 只替换 path + query + hash，不触及 origin
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+  } catch (e) {
+    console.warn("[LifeCycle] Failed to strip credentials from URL:", e);
+  }
+};
+
+/**
+ * 会话就绪后清除 URL 里的凭据；判定「刷新是否有凭据可依」。
+ *
+ * 注意后端返回的 `session_cookie_issued` 只说明「服务端写了 Set-Cookie」，
+ * **不等于浏览器会存、更不等于后续请求会带上**（跨站 iframe 下 Lax Cookie 不会发送）。
+ * 因此优先看本 tab 的 sessionStorage 是否真的拿到了会话令牌；Cookie 只作为同站补充。
+ */
+const lastSessionCookieIssued = ref(false);
+const maybeStripUrlAfterSessionReady = () => {
+  if (readEmbedSession() || lastSessionCookieIssued.value) {
+    stripUrlCredentials();
+  }
+};
+/** 本次会话已关闭（仅内存，刷新后重现）。 */
+const legacyTokenHintDismissed = ref(false);
+/** 已忽略（localStorage 持久化，按嵌入实例隔离）。 */
+const legacyTokenHintIgnored = ref(false);
+/** 当前生效的忽略标记存储键。 */
+const legacyTokenHintStorageKey = ref("");
+const showLegacyTokenHint = computed(
+  () =>
+    usesLegacyUrlToken.value &&
+    !legacyTokenHintDismissed.value &&
+    !legacyTokenHintIgnored.value
+);
+const LEGACY_TOKEN_HINT_IGNORED_KEY = "yovole_embed_legacy_token_hint_ignored";
+/** 解析忽略标记的存储键：instance_id → agent_id → 全局，逐级回退。 */
+const resolveLegacyTokenHintStorageKey = (): string => {
+  const instanceId = normalizeEmbedInstanceId(config.instanceId);
+  if (instanceId) return `${LEGACY_TOKEN_HINT_IGNORED_KEY}:${instanceId}`;
+  const agentId = String(urlPinnedAgentKey.value || "").trim();
+  if (agentId) return `${LEGACY_TOKEN_HINT_IGNORED_KEY}:${agentId}`;
+  return LEGACY_TOKEN_HINT_IGNORED_KEY;
+};
+/** 读取当前嵌入实例的忽略标记（localStorage 不可用时按未忽略处理）。 */
+const loadLegacyTokenHintIgnored = () => {
+  const key = resolveLegacyTokenHintStorageKey();
+  legacyTokenHintStorageKey.value = key;
+  try {
+    legacyTokenHintIgnored.value = localStorage.getItem(key) === "1";
+  } catch {
+    legacyTokenHintIgnored.value = false;
+  }
+};
+/** 关闭：仅本次会话隐藏，刷新后重现。 */
+const dismissLegacyTokenHint = () => {
+  legacyTokenHintDismissed.value = true;
+};
+/** 不再提示：对该嵌入实例永久隐藏。 */
+const ignoreLegacyTokenHint = () => {
+  legacyTokenHintDismissed.value = true;
+  legacyTokenHintIgnored.value = true;
+  try {
+    localStorage.setItem(
+      legacyTokenHintStorageKey.value || resolveLegacyTokenHintStorageKey(),
+      "1",
+    );
+  } catch {
+    // localStorage 不可用（隐私模式/跨域限制）时降级为仅本次隐藏
+  }
+};
+const showBashBanner = computed(
+  () => bashBannerEnv.value !== null && !bashBannerDismissed.value && config.showBashBanner
+);
+/** 会话级沙箱降级提示：沙箱不可用、本轮降级为本地执行（Bash 不可用）。 */
+const sandboxDegradedMessage = ref("");
+const dismissSandboxDegraded = () => {
+  sandboxDegradedMessage.value = "";
+};
+const handleBashEnvEvent = (env: "host" | "docker" | "e2b" | "ssh" | "k8s") => {
+  bashBannerEnv.value = env;
+  bashBannerDismissed.value = false;
+};
+/** 统一开关 Bash 横幅提示：写入 config 并持久化到 localStorage（1=关，0=开） */
+const setBashBannerVisible = (visible: boolean) => {
+  config.showBashBanner = visible;
+  localStorage.setItem("bash_env_banner_ignored", visible ? "0" : "1");
+  bashBannerEnv.value = null;
+  bashBannerDismissed.value = false;
+  showToast(
+    visible ? "Bash 运行环境横幅提示已开启" : "Bash 运行环境横幅提示已关闭",
+    visible ? "success" : "info",
+  );
+};
+const handleIgnoreBashBanner = () => {
+  setBashBannerVisible(false);
+};
+const activeTodoTimeline = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i];
+    if (!msg) continue;
+    if (isAgentTimelineMessage(msg)) {
+      const hasTodo = msg.processTimeline?.some((item) => item.kind === 'todo');
+      if (hasTodo) {
+        return msg.processTimeline;
+      }
+    }
+  }
+  return undefined;
+});
+const datasetMenuLoading = ref(false);
+const isInitialLoading = ref(true);
+const messagesContainer = ref<HTMLDivElement | null>(null);
+// Scroll State
+const isAtBottom = ref(true);
+const showNewMessageHint = ref(false);
+const autoScrollEnabled = ref(true);
+/** 程序滚底后的短时间内忽略 handleScroll 的「误判为手动上滚」，避免关掉 autoScroll（smooth 中间帧会触发） */
+const programmaticScrollUntil = ref(0);
+// Config
+const config = reactive({
+  token: "",
+  agentId: "",
+  instanceId: "", // For isolation
+  theme: "light",
+  welcomeMessage: "",
+  overrideModel: "", // To override default model
+  approvalMode: "ask" as "ask" | "allow" | "deny",
+  overrideAgentId: "", // To override agent via @mention
+  userAvatar: "", // Custom user avatar URL
+  agentAvatar: "", // Custom AI agent avatar URL (由后端 Redis 全局统一控制，不使用 localStorage 避免脏数据倒灌)
+  routingMode: "auto", // 'auto' | 'expert'
+  expertAgentId: "",
+  enableMultiAgent: true,
+  showShortcuts: true,
+  enableSqlPlan: false,
+  enableGrounding: false, // Embed 默认关闭反幻觉校验，由用户在右上角设置中主动开启
+  groundingBlockMode: "strict_buffer" as "strict_buffer" | "stream_with_retraction",
+  expandThoughts: true, // 思考过程默认展示开关
+  markdownTheme: "default" as "default" | "minimal" | "academic" | "apple" | "warm" | "compact",
+  hideMessageBorder: true,
+  /** Bash 运行环境横幅提示开关（可在设置面板中切换，localStorage 持久化） */
+  showBashBanner: localStorage.getItem("bash_env_banner_ignored") !== "1",
+  /** 生成中跑道动画开关（可在设置面板中切换，localStorage 持久化） */
+  showGeneratingAnimation: true,
+});
+type BrowserApprovalMode = "guarded" | "autopilot";
+const browserPanelVisible = ref(false);
+const browserSessionId = ref<string | null>(null);
+const browserViewerToken = ref<string | null>(null);
+const browserApprovalMode = ref<BrowserApprovalMode>("autopilot");
+const browserPinned = ref(true);
+const browserPanelOpening = ref(false);
+const browserEnvironmentError = ref<string | null>(null);
+const browserRefreshSignal = ref(0);
+const webPreviewVisible = ref(false);
+const webPreviewUrl = ref<string | null>(null);
+let browserOpenGeneration = 0;
+
+const hasValidAuthCredentials = (): boolean => {
+  return Boolean(config.token || hasPermission.value || accountInfo.value || currentUser.value);
+};
+
+const attachBrowserSession = async (
+  sessionId: string,
+  approvalMode?: string,
+  openingGeneration?: number,
+): Promise<boolean> => {
+  if (!sessionId) return false;
+  if (!hasValidAuthCredentials()) {
+    showToast("浏览器需要有效的登录凭证", "warning");
+    return false;
+  }
+  try {
+    const tokenResponse = await axios.post(
+      `/api/v1/chat/browser/sessions/${encodeURIComponent(sessionId)}/viewer-token`,
+      {},
+      { headers: embedAuthHeaders() },
+    );
+    if (openingGeneration !== undefined && openingGeneration !== browserOpenGeneration) return false;
+    browserSessionId.value = sessionId;
+    browserViewerToken.value = tokenResponse.data.token;
+    browserApprovalMode.value = approvalMode === "guarded" ? "guarded" : "autopilot";
+    browserPinned.value = true;
+    browserPanelVisible.value = true;
+    return true;
+  } catch (error: any) {
+    if (openingGeneration !== undefined && openingGeneration !== browserOpenGeneration) return false;
+    const detail = String(error?.response?.data?.detail || "");
+    // 只有后端显式标记"环境未就绪"（或详情里明确是 Playwright/Chromium 缺失）才展示安装引导：
+    // 普通 503（启动失败、人工接管冲突等）必须按真实原因提示，不能一律甩安装步骤
+    const isEnvironmentFailure =
+      String(error?.response?.headers?.['x-browser-error'] || '') === 'environment_not_ready' ||
+      /playwright|chromium|install-deps|运行环境未就绪/i.test(detail);
+    if (isEnvironmentFailure) {
+      browserEnvironmentError.value = detail || "服务端浏览器环境未就绪，请检查 Playwright/Chromium 安装状态";
+      browserPanelVisible.value = true;
+    } else {
+      showToast(detail || "连接服务端浏览器失败", "error");
+    }
+    return false;
+  }
+};
+
+// 409（AI 正在自动解算验证码）属于「几秒后自愈」的忙碌冲突：自动重开面板，不必让用户
+// 手动再点一次。重试上限用尽后清零计数，保证用户下次手动点击仍能获得完整重试机会。
+const BROWSER_OPEN_CONFLICT_MAX_RETRIES = 2;
+const BROWSER_OPEN_CONFLICT_RETRY_DELAY_MS = 3000;
+let browserOpenConflictRetries = 0;
+
+const openBrowserPanel = async () => {
+  if (browserPanelOpening.value) return;
+  if (browserSessionId.value && browserViewerToken.value) {
+    browserPanelVisible.value = true;
+    return;
+  }
+  if (!hasValidAuthCredentials()) {
+    showToast("浏览器需要有效的登录凭证", "warning");
+    return;
+  }
+  const generation = ++browserOpenGeneration;
+  browserPanelOpening.value = true;
+  browserPanelVisible.value = true;
+  browserEnvironmentError.value = null;
+  try {
+    const sessionResponse = await axios.post(
+      "/api/v1/chat/browser/sessions/open",
+      { url: "https://www.baidu.com/", conversation_id: conversationId.value || undefined },
+      { headers: embedAuthHeaders() },
+    );
+    if (generation !== browserOpenGeneration) return;
+    const session = sessionResponse.data;
+    browserEnvironmentError.value = null;
+    browserOpenConflictRetries = 0;
+    const attached = await attachBrowserSession(session.id, session.approval_mode, generation);
+    if (!attached && generation === browserOpenGeneration) browserPanelVisible.value = false;
+  } catch (error: any) {
+    if (generation !== browserOpenGeneration) return;
+    const detail = String(error?.response?.data?.detail || "");
+    const status = Number(error?.response?.status || 0);
+    // 409 = AI 正在解算验证码、其他操作短暂让行（唯一来源，见后端注释）。它属于
+    // 「几秒后自愈」的忙碌冲突，且此时面板没打开、用户也没有可点的释放按钮，
+    // 所以自动等几秒重开；超过重试上限才按普通失败提示。
+    if (status === 409 && browserOpenConflictRetries < BROWSER_OPEN_CONFLICT_MAX_RETRIES) {
+      browserOpenConflictRetries += 1;
+      browserPanelOpening.value = false;
+      showToast(
+        detail || `AI 正在识别验证码，${BROWSER_OPEN_CONFLICT_RETRY_DELAY_MS / 1000} 秒后自动重试…`,
+        "warning",
+      );
+      window.setTimeout(() => {
+        void openBrowserPanel();
+      }, BROWSER_OPEN_CONFLICT_RETRY_DELAY_MS);
+      return;
+    }
+    // 重试用尽：清零计数，保证用户下次手动打开仍有完整的自动重试机会
+    browserOpenConflictRetries = 0;
+    // 只有后端显式标记"环境未就绪"（或详情里明确是 Playwright/Chromium 缺失）才展示安装引导：
+    // 普通 503（启动失败、人工接管冲突等）必须按真实原因提示，不能一律甩安装步骤
+    const isEnvironmentFailure =
+      String(error?.response?.headers?.['x-browser-error'] || '') === 'environment_not_ready' ||
+      /playwright|chromium|install-deps|运行环境未就绪/i.test(detail);
+    if (isEnvironmentFailure) {
+      browserEnvironmentError.value = detail || "服务端浏览器环境未就绪，请检查 Playwright/Chromium 安装状态";
+      browserPanelVisible.value = true;
+    } else {
+      browserPanelVisible.value = false;
+      showToast(detail || "打开服务端浏览器失败", "error");
+    }
+  } finally {
+    if (generation === browserOpenGeneration) browserPanelOpening.value = false;
+  }
+};
+
+const handleOpenWebPreviewUrl = (url: string) => {
+  if (!isBrowserOpenableUrl(url)) return;
+  browserPanelVisible.value = false;
+  webPreviewUrl.value = url;
+  webPreviewVisible.value = true;
+};
+
+const closeWebPreviewPanel = () => {
+  webPreviewVisible.value = false;
+  webPreviewUrl.value = null;
+};
+
+const handleBrowserCropAskAi = async ({ image, question }: { image: string; question: string }) => {
+  userInput.value = question;
+  if (image && chatInputRef.value?.addBase64Image) {
+    await chatInputRef.value.addBase64Image(image, `browser_crop_${Date.now()}.png`);
+  }
+  showToast("已自动将截图附加至提问框并填入问题，可直接发送", "success");
+  nextTick(() => {
+    chatInputRef.value?.focus?.();
+  });
+};
+
+const closeBrowserPanel = () => {
+  browserOpenGeneration += 1;
+  browserPanelOpening.value = false;
+  browserPanelVisible.value = false;
+};
+
+const closeBrowserSession = async (destroyProfile: boolean = false) => {
+  const sessionId = browserSessionId.value;
+  if (!sessionId || typeof window === "undefined") return;
+  browserOpenGeneration += 1;
+  browserPanelOpening.value = false;
+  try {
+    await axios.delete(
+      `/api/v1/chat/browser/sessions/${encodeURIComponent(sessionId)}?destroy_profile=${destroyProfile ? "true" : "false"}`,
+      { headers: embedAuthHeaders() },
+    );
+    browserPanelVisible.value = false;
+    browserSessionId.value = null;
+    browserViewerToken.value = null;
+    if (destroyProfile) {
+      showToast("浏览器会话已结束，重置登录与本地缓存成功", "success");
+    } else {
+      showToast("浏览器会话已结束，Profile 和 Cookie 已保留", "success");
+    }
+  } catch (error: any) {
+    showToast(error?.response?.data?.detail || "结束浏览器会话失败", "error");
+  }
+};
+
+const toggleBrowserPanel = () => {
+  if (browserPanelVisible.value) {
+    closeBrowserPanel();
+  } else {
+    void openBrowserPanel();
+  }
+};
+
+const updateBrowserApprovalMode = async (mode: BrowserApprovalMode) => {
+  if (!browserSessionId.value) return;
+  const previous = browserApprovalMode.value;
+  browserApprovalMode.value = mode;
+  try {
+    await axios.put(
+      `/api/v1/chat/browser/sessions/${encodeURIComponent(browserSessionId.value)}/policy`,
+      { approval_mode: mode },
+      { headers: embedAuthHeaders() },
+    );
+  } catch (error: any) {
+    browserApprovalMode.value = previous;
+    showToast(error?.response?.data?.detail || "切换浏览器动作模式失败", "error");
+  }
+};
+const thinkingEnableOverride = ref<boolean | null>(null);
+const reasoningEffortOverride = ref<ReasoningEffort | null>(null);
+const temperatureOverride = ref<number | null>(null);
+const welcomeCards = ref<Array<{ icon: string; title: string; subtitle: string; prompt: string }>>([]);
+const showPersonalResources = ref(false);
+const personalResourcesTab = ref<PersonalResourceTab>("tokens");
+const portalInboxRef = ref<{ open: () => void | Promise<void> } | null>(null);
+const {
+  payload: workbenchHome,
+  load: loadWorkbenchHome,
+  refresh: refreshWorkbenchHome,
+  refreshing: workbenchHomeRefreshing,
+  error: workbenchHomeError,
+} = useWorkbenchHome();
+const welcomePersonalResources = computed(() => {
+  const items = workbenchHome.value?.personal_resources;
+  const source = Array.isArray(items) && items.length
+    ? items
+    : workbenchHomeError.value
+      ? personalResourceFallbackItems()
+      : personalResourcePlaceholderItems();
+  return filterEmbedWelcomePersonalResources(source);
+});
+
+const refreshWelcomePersonalResources = () => {
+  void refreshWorkbenchHome();
+};
+
+const openPersonalResources = (tab: string) => {
+  if (isInboxPersonalResource({ tab })) {
+    void portalInboxRef.value?.open();
+    return;
+  }
+  personalResourcesTab.value = (tab as PersonalResourceTab) || "tokens";
+  showPersonalResources.value = true;
+};
+
+const handleInboxOpenSavedReport = (request: SavedReportOpenRequest) => {
+  openSavedReportFromHost(request);
+};
+
+const handlePersonalResourceOpenReport = (payload: any) => {
+  showPersonalResources.value = false;
+  openSavedReportFromHost({
+    report_id: payload?.report_id,
+    run_id: payload?.run_id,
+    detail_tab: payload?.detail_tab,
+    run_now: payload?.run_now,
+  });
+};
+
+const handlePersonalResourceOpenConversation = (payload: any) => {
+  showPersonalResources.value = false;
+  const conversationId =
+    typeof payload === "string" ? payload : payload?.conversation_id;
+  if (conversationId) {
+    handleHistoryClick({ conversation_id: conversationId });
+  }
+};
+
+const handlePersonalResourceOpenQuestion = (payload: {
+  query: string;
+  action: "send" | "fill";
+}) => {
+  showPersonalResources.value = false;
+  void handleQuickQuestion(payload?.query, payload?.action === "fill" ? "fill" : "send");
+};
+
+const loadWelcomeCards = async (agentId?: string) => {
+  const id = String(agentId || '').trim();
+  if (!id) {
+    welcomeCards.value = [];
+    return;
+  }
+  try {
+    const response = await axios.get(`/api/portal/agents/${encodeURIComponent(id)}/welcome-cards`);
+    const cards = response.data?.cards;
+    welcomeCards.value = Array.isArray(cards)
+      ? cards.filter((card: any) => card?.title && card?.subtitle && card?.prompt).slice(0, 3)
+      : [];
+  } catch (error) {
+    console.warn('Failed to load agent welcome cards', error);
+    welcomeCards.value = [];
+  }
+};
+
+/** URL ?agent_id= 深链锁定：禁止切换专家 / 自动路由 / @提及 */
+const urlPinnedAgentKey = ref("");
+/** 集成方指定的 agent_id：URL、INIT_CONFIG、Ticket 均使用同一实例锁定状态。 */
+const integrationAgentLockId = ref("");
+const pinnedAgent = ref<any | null>(null);
+const pinnedAgentId = ref("");
+const pinnedAgentCapabilities = ref<string[]>([]);
+const urlAgentAccessError = ref<null | {
+  code: "AGENT_NOT_FOUND" | "AGENT_FORBIDDEN";
+  message: string;
+  agentKey: string;
+  displayName?: string;
+}>(null);
+const isUrlAgentPinned = computed(
+  () => Boolean(urlPinnedAgentKey.value) && !urlAgentAccessError.value && Boolean(pinnedAgentId.value),
+);
+const isRoutingSettingsLocked = computed(
+  () => Boolean(integrationAgentLockId.value) && !urlAgentAccessError.value,
+);
+const applyIntegrationAgentLock = (agentId: string) => {
+  const normalizedAgentId = String(agentId || "").trim();
+  if (!normalizedAgentId) return;
+  integrationAgentLockId.value = normalizedAgentId;
+  config.agentId = normalizedAgentId;
+  config.expertAgentId = normalizedAgentId;
+  config.routingMode = "expert";
+  config.overrideAgentId = "";
+};
+const pinnedAgentLabel = computed(() => {
+  const agent = pinnedAgent.value;
+  return String(agent?.display_name || agent?.name || urlPinnedAgentKey.value || "").trim();
+});
+/** 专家模式（URL 锁定或手动选定）时左上角展示名 */
+const headerExpertLabel = computed(() => {
+  if (isUrlAgentPinned.value && pinnedAgentLabel.value) {
+    return pinnedAgentLabel.value;
+  }
+  if (config.routingMode === "expert" && config.expertAgentId) {
+    const agent = currentExpertAgent.value;
+    return String(agent?.display_name || agent?.name || config.expertAgentId || "").trim();
+  }
+  return "";
+});
+const agentHasCapability = (cap: string) => {
+  const lockedAgent = allowedAgents.value.find(
+    (agent: any) => String(agent?.id || "") === integrationAgentLockId.value,
+  );
+  const caps = pinnedAgentCapabilities.value.length
+    ? pinnedAgentCapabilities.value
+    : (Array.isArray(lockedAgent?.capabilities) ? lockedAgent.capabilities : []);
+  if (!Array.isArray(caps) || caps.length === 0) return false;
+  return caps.includes(cap);
+};
+const effectiveSlashCommands = computed(() => {
+  const list = slashCommands.value || [];
+  if (!isRoutingSettingsLocked.value) return list;
+  return list.filter((cmd: any) => {
+    if (cmd.id === DATASET_PORTAL_SYSTEM_COMMAND_ID) {
+      return agentHasCapability("data_query");
+    }
+    if (cmd.id === KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID) {
+      return agentHasCapability("knowledge_base") && !cmd.disabled;
+    }
+    return true;
+  });
+});
+
+const resolveUrlPinnedAgent = async (): Promise<boolean> => {
+  const key = String(urlPinnedAgentKey.value || "").trim();
+  if (!key) {
+    urlAgentAccessError.value = null;
+    pinnedAgent.value = null;
+    pinnedAgentId.value = "";
+    pinnedAgentCapabilities.value = [];
+    return true;
+  }
+  try {
+    const res = await axios.get(`/api/portal/agents/${encodeURIComponent(key)}/embed-access`);
+    const agent = res.data;
+    pinnedAgent.value = agent;
+    pinnedAgentId.value = String(agent?.id || "");
+    pinnedAgentCapabilities.value = Array.isArray(agent?.capabilities) ? agent.capabilities : [];
+    urlAgentAccessError.value = null;
+    config.agentId = pinnedAgentId.value || key;
+    void loadWelcomeCards(config.agentId);
+    applyIntegrationAgentLock(pinnedAgentId.value || key);
+    return true;
+  } catch (e: any) {
+    const status = e?.response?.status;
+    const body = e?.response?.data || {};
+    const detailObj = (body.data && typeof body.data === "object")
+      ? body.data
+      : (body.detail && typeof body.detail === "object" ? body.detail : null);
+    const code = detailObj?.code === "AGENT_FORBIDDEN" || status === 403
+      ? "AGENT_FORBIDDEN"
+      : "AGENT_NOT_FOUND";
+    urlAgentAccessError.value = {
+      code,
+      message: String(
+        detailObj?.message
+        || body.message
+        || (code === "AGENT_FORBIDDEN" ? "无权使用该智能体" : "智能体不存在或已停用")
+      ),
+      agentKey: key,
+      displayName: detailObj?.display_name || detailObj?.agent_name || undefined,
+    };
+    pinnedAgent.value = null;
+    pinnedAgentId.value = "";
+    pinnedAgentCapabilities.value = [];
+    integrationAgentLockId.value = "";
+    return false;
+  }
+};
+
+const saveRoutingSettings = () => {
+    localStorage.setItem("yovole_enable_multi_agent", config.enableMultiAgent ? "1" : "0");
+    localStorage.setItem("yovole_show_shortcuts", config.showShortcuts ? "1" : "0");
+    localStorage.setItem("yovole_enable_sql_plan", config.enableSqlPlan ? "1" : "0");
+    localStorage.setItem("yovole_override_model", config.overrideModel || "");
+    localStorage.setItem("yovole_approval_mode", config.approvalMode || "ask");
+    localStorage.setItem("yovole_embed_theme", config.theme || "light");
+    localStorage.setItem("yovole_expand_thoughts", config.expandThoughts ? "1" : "0");
+    localStorage.setItem("yovole_grounding_block_mode", config.groundingBlockMode || "strict_buffer");
+    localStorage.setItem("yovole_markdown_theme", config.markdownTheme || "default");
+    localStorage.setItem("yovole_hide_message_border", config.hideMessageBorder ? "1" : "0");
+    localStorage.setItem("yovole_show_generating_animation", config.showGeneratingAnimation ? "1" : "0");
+};
+const saveRoutingPreference = async (mode: "auto" | "expert", agentId = "") => {
+    if (isRoutingSettingsLocked.value) return;
+    const normalizedAgentId = mode === "expert" ? String(agentId || "").trim() : "";
+    // 新建会话要沿用账号默认，本地缓存必须先同步，否则会拿到上一次的旧值。
+    savedRoutingPreference.value = {
+        routing_mode: mode,
+        expert_agent_id: normalizedAgentId,
+        routing_configured: true,
+    };
+    try {
+        await axios.put("/api/portal/portal-prefs/routing", {
+            routing_mode: mode,
+            expert_agent_id: normalizedAgentId,
+        });
+    } catch (error) {
+        console.error("Failed to save routing preference to Redis", error);
+        showToast("路由偏好保存失败，请稍后重试", "error");
+    }
+};
+const handleEmbedModelSelection = (model: string) => {
+    const previousModel = config.overrideModel;
+    if (previousModel === model) {
+        return;
+    }
+    config.overrideModel = model;
+    thinkingEnableOverride.value = null;
+    reasoningEffortOverride.value = null;
+    temperatureOverride.value = null;
+    saveRoutingSettings();
+    if (model) {
+        // 用输入框实际候选取展示名：智能体默认模型可能不在白名单候选里，但同样要显示名称
+        const found = chatInputModelOptions.value.find((m) => m.model_id === model);
+        const displayName = found?.name || model;
+        showToast(`已切换模型为: ${displayName}`, "success");
+    } else {
+        showToast("已恢复为默认模型", "info");
+    }
+};
+const resetEmbedThinkingOverrides = () => {
+    thinkingEnableOverride.value = null;
+    reasoningEffortOverride.value = null;
+    temperatureOverride.value = null;
+};
+/** 会话级专家读取序号：连续切会话时只认最后一次响应，避免旧响应覆盖新会话。 */
+let conversationRoutingLoadSequence = 0;
+
+/**
+ * 是否已按「该会话自己的记录」恢复过专家。
+ *
+ * 初始化里 `fetchAllowedAgents()` 与 `loadConversationRouting()` 是两条并发链路：
+ * 前者拿到列表后会把 config 覆盖成账号默认，后者恢复会话自己的专家。谁先到不确定，
+ * 若账号默认后到就会把刚恢复的会话专家盖掉。立起这个标志后，账号默认只做兜底。
+ */
+const conversationRoutingRestored = ref(false);
+
+/** 读取会话自己的专家选择；无记录（data=null）时保持当前值，即账号默认。 */
+const loadConversationRouting = async (cid: string) => {
+  const normalized = String(cid || "").trim();
+  if (!normalized || isRoutingSettingsLocked.value) return;
+  const sequence = ++conversationRoutingLoadSequence;
+  try {
+    const res = await axios.get(
+      `/api/v1/chat/conversation/${encodeURIComponent(normalized)}/routing`,
+      { headers: embedAuthHeaders() },
+    );
+    if (sequence !== conversationRoutingLoadSequence) return;
+    if (conversationId.value !== normalized) return;
+    const routing = res.data?.data;
+    if (!routing) {
+      // 该会话没有任何记录：按「智能委派」处理，绝不回落账号默认。
+      // 账号默认会被「另一个会话里的切换」改写，回落它等于让本会话被动跟随别人。
+      config.routingMode = "auto";
+      config.expertAgentId = "";
+    } else if (routing.routing_mode === "expert" && routing.expert_agent_id) {
+      config.routingMode = "expert";
+      config.expertAgentId = String(routing.expert_agent_id);
+    } else {
+      config.routingMode = "auto";
+      config.expertAgentId = "";
+    }
+    // 列表已就绪时当场校正：会话记录的专家可能已被停用或收回权限，
+    // 不校正就会在标题上显示一串裸 ID。
+    if (
+      allowedAgents.value.length > 0
+      && config.routingMode === "expert"
+      && config.expertAgentId
+      && !allowedAgents.value.some((a: any) => a.id === config.expertAgentId)
+    ) {
+      config.routingMode = "auto";
+      config.expertAgentId = "";
+    }
+    // 恢复成功：此后账号默认只做兜底，不能再覆盖该会话自己的选择。
+    conversationRoutingRestored.value = true;
+  } catch (e) {
+    console.warn("[Routing] Failed to load conversation routing:", e);
+  }
+};
+
+/** 写入会话自己的专家选择；失败只告警——本地切换已经生效，不打断用户。 */
+const saveConversationRouting = async (
+  cid: string,
+  mode: "auto" | "expert",
+  agentId = "",
+) => {
+  const normalized = String(cid || "").trim();
+  if (!normalized || isRoutingSettingsLocked.value) return;
+  try {
+    await axios.put(
+      `/api/v1/chat/conversation/${encodeURIComponent(normalized)}/routing`,
+      {
+        routing_mode: mode,
+        expert_agent_id: mode === "expert" ? String(agentId || "").trim() : "",
+      },
+      { headers: embedAuthHeaders() },
+    );
+  } catch (e) {
+    console.warn("[Routing] Failed to save conversation routing:", e);
+  }
+};
+
+const switchToAuto = () => {
+    if (isRoutingSettingsLocked.value) {
+      showToast("当前链接已锁定指定智能体，无法切换到智能委派", "warning");
+      return;
+    }
+    config.routingMode = "auto";
+    config.expertAgentId = "";
+    void saveRoutingPreference("auto");
+    void saveConversationRouting(conversationId.value, "auto");
+    showToast("已切换为智能委派模式", "success");
+};
+const switchToExpert = (agentId: string) => {
+    if (isRoutingSettingsLocked.value) {
+      showToast("当前链接已锁定指定智能体，无法切换其他专家", "warning");
+      return;
+    }
+    const normalizedAgentId = String(agentId || "").trim();
+    if (!normalizedAgentId) return;
+    config.expertAgentId = normalizedAgentId;
+    config.routingMode = "expert";
+    void saveRoutingPreference("expert", normalizedAgentId);
+    void saveConversationRouting(conversationId.value, "expert", normalizedAgentId);
+    // URL 深链锁定初始化时不提示，避免首屏弹出
+    if (!isRoutingSettingsLocked.value) {
+      const agent = allowedAgents.value.find((a: any) => a.id === normalizedAgentId) || pinnedAgent.value;
+      const name = agent?.display_name || agent?.name || "专家";
+      showToast(`已切换至专家：${name}`, "success");
+    }
+};
+const onModeChange = (mode: string) => {
+    saveRoutingSettings();
+    if (mode === "auto") {
+        showToast("已切换为智能委派模式", "success");
+    }
+};
+const conversationId = ref("");
+/** 会话内各 trace_id → 产物数量 的缓存（后端 /artifacts/counts 返回），驱动「产物」按钮显示与数量角标 */
+const artifactCountByTrace = ref<Record<string, number>>({});
+/** 某 trace 对应的产物数量（无则 0） */
+const artifactCount = (traceId: string): number => artifactCountByTrace.value[traceId] || 0;
+/** 会话内可复用结果数量；只用于入口可用性，不改变当前消息角标口径。 */
+const conversationReusableResultCount = ref(0);
+/** 会话内是否存在可复用结果；只用于入口可用性，不改变当前消息角标口径。 */
+const hasConversationReusableResult = computed(() => Boolean(
+  conversationReusableResultCount.value > 0
+  || messages.value.some((msg) => currentMessageReusableCount(msg) > 0),
+));
+/** 会话内是否存在文件产物；只用于入口可用性，不改变当前消息角标口径。 */
+const hasConversationArtifact = computed(() => Object.values(artifactCountByTrace.value).some((count) => count > 0));
+/** 会话内文件产物总数；用于弹出菜单右侧的会话总数，不改变当前消息角标口径。 */
+const conversationArtifactCount = computed(() => Object.values(artifactCountByTrace.value).reduce((total, count) => total + count, 0));
+/** “数据 / 文件”入口按整个会话的产出物判断是否可用。 */
+const hasConversationDataFile = computed(() => Boolean(
+  hasConversationReusableResult.value
+  || hasConversationArtifact.value
+  || messages.value.some((msg) => Boolean(msg.hasDataOutput)),
+));
+/** 拉取本会话可复用结果数量，保证刷新后入口仍能展示正确的查看项。 */
+const loadReusableResultAvailability = async () => {
+  const cid = conversationId.value;
+  if (!cid) {
+    conversationReusableResultCount.value = 0;
+    reusableResultCountByTrace.value = {};
+    return;
+  }
+  try {
+    const res = await artifactApi.reusableResults(cid, config.instanceId);
+    if (conversationId.value !== cid) return;
+    const items = res.data?.data?.items ?? [];
+    const counts: Record<string, number> = {};
+    for (const item of items) {
+      const traceId = String(item.trace_id || '').trim();
+      if (traceId) counts[traceId] = (counts[traceId] || 0) + 1;
+    }
+    conversationReusableResultCount.value = items.length;
+    reusableResultCountByTrace.value = counts;
+  } catch (e) {
+    console.warn("[ReusableResults] 拉取会话结果数量失败", e);
+    if (conversationId.value === cid) {
+      conversationReusableResultCount.value = 0;
+      reusableResultCountByTrace.value = {};
+    }
+  }
+};
+/** 拉取本会话各 trace_id 的产物数量（新会话/切会话/流式结束有新增产物时调用） */
+const loadArtifactCounts = async () => {
+  const cid = conversationId.value;
+  if (!cid) {
+    artifactCountByTrace.value = {};
+    return;
+  }
+  try {
+    const res = await artifactApi.countsByTrace(cid);
+    // 仅在会话未切换时写入，避免旧会话的统计覆盖新会话
+    if (conversationId.value !== cid) return;
+    artifactCountByTrace.value = res.data?.data?.counts ?? {};
+  } catch (e) {
+    console.warn("[Artifacts] 拉取产物数量失败", e);
+    if (conversationId.value === cid) {
+      artifactCountByTrace.value = {};
+    }
+  }
+};
+// 会话切换 / 首次挂载 → 刷新产物数量
+watch(conversationId, () => {
+  selectedReusableResultId.value = null;
+  focusedReusableResultId.value = null;
+  focusedOutputTraceId.value = null;
+  reusedReusableResultId.value = null;
+  artifactCountByTrace.value = {};
+  reusableResultCountByTrace.value = {};
+  conversationReusableResultCount.value = 0;
+  void loadReusableResultAvailability();
+  void loadArtifactCounts();
+});
+const showResourceScopeModal = ref(false);
+const resourceScope = ref({ project_name: '', datasets: [] as any[], knowledge_bases: [] as any[], skills: [] as any[], mcp_tools: [] as any[] });
+const {
+  activeMetadataDatasetIds,
+  syncActiveMetadataDatasetsFromInput,
+  toggleMetadataDatasetActive,
+  clearActiveMetadataDatasets,
+} = useDatasetMount();
+const resourceScopeDraft = reactive({ project_name: '', datasets: '', knowledge_bases: '', skills: '', mcp_tools: '' });
+const resourceOptionsLoading = ref(false);
+const resourceOptionsLoaded = ref(false);
+const resourceOptionSearch = reactive<Record<string, string>>({ datasets: '', knowledge_bases: '', skills: '', mcp_tools: '' });
+type ResourceScopeGroupKey = 'datasets' | 'knowledge_bases' | 'skills' | 'mcp_tools';
+const resourceOptions = reactive<Record<ResourceScopeGroupKey, any[]>>({ datasets: [], knowledge_bases: [], skills: [], mcp_tools: [] });
+
+const emptyResourceScopeState = () => ({
+  project_name: '',
+  datasets: [] as any[],
+  knowledge_bases: [] as any[],
+  skills: [] as any[],
+  mcp_tools: [] as any[],
+});
+
+const resourceOptionGroups: { key: ResourceScopeGroupKey; label: string; shortLabel?: string; hint: string }[] = [
+  {
+    key: 'datasets',
+    label: '数据集',
+    shortLabel: '数据集',
+    hint: '不选则数据门户与 ChatBI 仍按默认权限；选中后仅允许所列数据集。',
+  },
+  {
+    key: 'knowledge_bases',
+    label: '知识库',
+    shortLabel: '知识库',
+    hint: '不选则沿用会话内已选知识库；选中后检索仅限列表内知识库。',
+  },
+  {
+    key: 'skills',
+    label: '技能 (Skills)',
+    shortLabel: '技能',
+    hint: '不选则仍可按问题自动匹配技能；选中后仅加载已挂载技能。',
+  },
+  {
+    key: 'mcp_tools',
+    label: '我的 MCP',
+    shortLabel: 'MCP',
+    hint: '仅可选择个人已发布 MCP；平台公共 MCP 请在智能体版本中配置。选中后与版本 tools 叠加注入本会话。',
+  },
+];
+const resourceScopeModalDraft = ref(emptyResourceScopeState());
+const resourceScopeSaving = ref(false);
+const resourceScopeActiveTab = ref<ResourceScopeGroupKey>('datasets');
+const resourceScopeCount = computed(() => resourceScope.value.datasets.length + resourceScope.value.knowledge_bases.length + resourceScope.value.skills.length + resourceScope.value.mcp_tools.length);
+const projectSessionHasDatasetScope = computed(() => Boolean(resourceScope.value.project_name) && resourceScope.value.datasets.length > 0);
+const projectSessionHasKnowledgeScope = computed(() => Boolean(resourceScope.value.project_name) && resourceScope.value.knowledge_bases.length > 0);
+const sessionMountedMetadataDatasetIds = computed(() =>
+  resourceScope.value.datasets.map((item: any) => String(item.id || '').trim()).filter(Boolean),
+);
+const scopedKnowledgeDatasets = computed(() => {
+  if (!resourceScope.value.project_name) return knowledgeDatasets.value;
+  if (!projectSessionHasKnowledgeScope.value) return knowledgeDatasets.value;
+  const allowed = new Set(resourceScope.value.knowledge_bases.flatMap((item: any) => [item.id, item.name, item.dataset_id, item.ragflow_dataset_id].filter(Boolean).map((value: any) => String(value))));
+  return knowledgeDatasets.value.filter((item: any) => [item.id, item.ragflow_dataset_id, item.dataset_id, item.name, item.platform_name].filter(Boolean).some((value: any) => allowed.has(String(value))));
+});
+const scopedActiveDatasetIds = computed(() => {
+  if (!resourceScope.value.project_name) return activeDatasetIds.value;
+  const allowed = new Set(scopedKnowledgeDatasets.value.map((item: any) => String(item.id || item.ragflow_dataset_id || item.dataset_id)));
+  return activeDatasetIds.value.filter((id: string) => allowed.has(String(id)));
+});
+const scopedPortalNavigationPayload = computed(() => {
+  if (!projectSessionHasDatasetScope.value || !portalNavigationPayload.value) return portalNavigationPayload.value;
+  const allowed = new Set(resourceScope.value.datasets.flatMap((item: any) => [item.id, item.name, item.dataset_name, item.display_name].filter(Boolean).map((value: any) => String(value))));
+  return {
+    ...portalNavigationPayload.value,
+    groups: (portalNavigationPayload.value.groups || []).map((group: any) => ({
+      ...group,
+      related_data: (group.related_data || []).filter((item: any) => [item.dataset, item.dataset_name, item.display_name, item.name, item.id].filter(Boolean).some((value: any) => allowed.has(String(value)))),
+    })).filter((group: any) => (group.related_data || []).length > 0),
+    dataset_count: resourceScope.value.datasets.length,
+  };
+});
+const resourceScopeEntryKey = (type: ResourceScopeGroupKey | string, item: any, index = 0) => {
+  const id = String(item?.id || item?.name || index);
+  const scope = String(item?.scope || '').trim();
+  return scope ? `${type}:${scope}:${id}` : `${type}:${id}`;
+};
+
+const resourceScopeEntriesMatch = (left: any, right: any) => {
+  if (String(left?.id || '') !== String(right?.id || '')) return false;
+  const leftScope = String(left?.scope || '').trim();
+  const rightScope = String(right?.scope || '').trim();
+  if (leftScope && rightScope) return leftScope === rightScope;
+  return true;
+};
+
+const resourceEntryMatchesOption = (entry: any, option: any) => {
+  if (entry?.scope && option?.scope && String(entry.scope) !== String(option.scope)) return false;
+  const eid = String(entry?.id ?? '').trim();
+  const oid = String(option?.id ?? '').trim();
+  const ename = String(entry?.name ?? '').trim();
+  const oname = String(option?.name ?? '').trim();
+  if (eid && oid && eid === oid) return true;
+  if (ename && oname && ename === oname) return true;
+  if (eid && oname && eid === oname) return true;
+  if (ename && oid && ename === oid) return true;
+  const edn = String(entry?.dataset_name ?? '').trim();
+  const odn = String(option?.dataset_name ?? option?.name ?? '').trim();
+  if (edn && odn && edn === odn) return true;
+  return false;
+};
+
+const remapScopeSelections = (items: any[], options: any[]) =>
+  (items || []).map((selected: any) => {
+    const matched = options.find((option: any) => resourceEntryMatchesOption(selected, option));
+    return matched
+      ? {
+          ...selected,
+          id: matched.id,
+          name: matched.name || selected.name,
+          ...(matched.dataset_name ? { dataset_name: matched.dataset_name } : {}),
+        }
+      : selected;
+  });
+
+const syncResourceScopeDraftStrings = (scope: typeof resourceScope.value) => {
+  resourceScopeDraft.project_name = scope.project_name || '';
+  resourceScopeDraft.datasets = scope.datasets.map((item: any) => item.name || item.id).join(',');
+  resourceScopeDraft.knowledge_bases = scope.knowledge_bases.map((item: any) => item.name || item.id).join(',');
+  resourceScopeDraft.skills = scope.skills.map((item: any) => item.name || item.id).join(',');
+  resourceScopeDraft.mcp_tools = (scope.mcp_tools || []).map((item: any) => item.name || item.id).join(',');
+};
+
+const cloneResourceScope = (scope: typeof resourceScope.value) => ({
+  project_name: scope.project_name || '',
+  datasets: scope.datasets.map((item: any) => ({ ...item })),
+  knowledge_bases: scope.knowledge_bases.map((item: any) => ({ ...item })),
+  skills: scope.skills.map((item: any) => ({ ...item })),
+  mcp_tools: (scope.mcp_tools || []).map((item: any) => ({ ...item })),
+});
+
+const modalDraftSelections = (type: ResourceScopeGroupKey) => resourceScopeModalDraft.value[type] || [];
+
+const modalOrphanSelections = (type: ResourceScopeGroupKey) => {
+  if (!resourceOptionsLoaded.value) return [];
+  const options = resourceOptions[type] || [];
+  if (!options.length) return [];
+  return modalDraftSelections(type).filter((item) => !options.some((option) => resourceEntryMatchesOption(item, option)));
+};
+
+const modalResourceOrphanCount = computed(() =>
+  resourceOptionGroups.reduce((sum, group) => sum + modalOrphanSelections(group.key).length, 0),
+);
+
+const modalSelectedCount = (type: ResourceScopeGroupKey) => modalDraftSelections(type).length;
+
+const modalOptionTotalCount = (type: ResourceScopeGroupKey) => (resourceOptions[type] || []).length;
+
+const isPersonalSkillItem = (item: any) => String(item?.scope || '').toLowerCase() === 'personal';
+
+const modalSkillScopeSelectedCount = (scope: 'global' | 'personal') =>
+  modalDraftSelections('skills').filter((item: any) =>
+    scope === 'personal' ? isPersonalSkillItem(item) : !isPersonalSkillItem(item),
+  ).length;
+
+const modalSkillScopeTotalCount = (scope: 'global' | 'personal') =>
+  (resourceOptions.skills || []).filter((item: any) =>
+    scope === 'personal' ? isPersonalSkillItem(item) : !isPersonalSkillItem(item),
+  ).length;
+
+const modalSelectedChips = (type: ResourceScopeGroupKey) => {
+  const orphans = new Set(modalOrphanSelections(type));
+  return modalDraftSelections(type).map((item: any, index: number) => ({
+    key: resourceScopeEntryKey(type, item, index),
+    item,
+    label: item.name || item.id || '未命名',
+    orphan: orphans.has(item),
+  }));
+};
+
+const resourceModalOptionSelected = (type: ResourceScopeGroupKey, option: any) =>
+  modalDraftSelections(type).some((item) => resourceEntryMatchesOption(item, option));
+
+const resourceOptionInitial = (option: any) => String(option.name || option.id || '?').trim().charAt(0).toUpperCase();
+const resourceOptionAccent = (index: number) => ['bg-teal-500', 'bg-lime-500', 'bg-violet-500', 'bg-green-500', 'bg-sky-500'][index % 5] || 'bg-teal-500';
+
+const filteredResourceOptions = (type: ResourceScopeGroupKey) => {
+  const query = (resourceOptionSearch[type] || '').trim().toLowerCase();
+  return (resourceOptions[type] || []).filter((item: any) =>
+    !query
+    || `${item.name || ''} ${item.id || ''} ${item.description || ''} ${item.server_name || ''} ${item.server_remark || ''}`.toLowerCase().includes(query),
+  );
+};
+
+const sortedModalResourceOptions = (type: ResourceScopeGroupKey) => {
+  const options = filteredResourceOptions(type);
+  // MCP 按服务分组展示，组内按名称排序即可，不再把已选顶到列表最前
+  if (type === 'mcp_tools') {
+    return options.slice().sort((a: any, b: any) => {
+      const serverCmp = String(a.server_name || '').localeCompare(String(b.server_name || ''), 'zh-CN');
+      if (serverCmp !== 0) return serverCmp;
+      return String(a.name || a.id || '').localeCompare(String(b.name || b.id || ''), 'zh-CN');
+    });
+  }
+  const selected: any[] = [];
+  const rest: any[] = [];
+  for (const option of options) {
+    if (resourceModalOptionSelected(type, option)) selected.push(option);
+    else rest.push(option);
+  }
+  return [...selected, ...rest];
+};
+
+const buildModalDraftOptionItem = (option: any) => ({
+  id: option.id,
+  name: option.name || option.id,
+  ...(option.dataset_name ? { dataset_name: option.dataset_name } : {}),
+  ...(option.scope ? { scope: option.scope } : {}),
+  ...(option.server_name ? { server_name: option.server_name } : {}),
+  ...(option.server_remark ? { server_remark: option.server_remark } : {}),
+  ...(option.description ? { description: option.description } : {}),
+});
+
+const toggleModalResourceOption = (type: ResourceScopeGroupKey, option: any) => {
+  const selected = resourceModalOptionSelected(type, option);
+  // 被禁技能：选中方向必须拦住——后端会把这次挂载丢掉，界面若显示已选就是静默失效；
+  // 取消方向放行，否则禁用前保存过的历史项在弹窗里再也去不掉（禁用不该让人无法收拾现场）
+  if (!selected && type === 'skills' && isSkillForbidden(option)) return;
+  const items = selected
+    ? modalDraftSelections(type).filter((item) => !resourceEntryMatchesOption(item, option))
+    : [
+        ...modalDraftSelections(type),
+        buildModalDraftOptionItem(option),
+      ];
+  resourceScopeModalDraft.value = { ...resourceScopeModalDraft.value, [type]: items };
+};
+
+const toggleModalResourceGroup = (type: ResourceScopeGroupKey, options: any[], selectAll: boolean) => {
+  let items = [...modalDraftSelections(type)];
+  for (const option of options || []) {
+    const isSelected = items.some((item) => resourceEntryMatchesOption(item, option));
+    if (selectAll && !isSelected) {
+      items.push(buildModalDraftOptionItem(option));
+    } else if (!selectAll && isSelected) {
+      items = items.filter((item) => !resourceEntryMatchesOption(item, option));
+    }
+  }
+  resourceScopeModalDraft.value = { ...resourceScopeModalDraft.value, [type]: items };
+};
+
+const removeModalDraftResource = (type: ResourceScopeGroupKey, item: any) => {
+  const items = modalDraftSelections(type).filter((entry) => entry !== item && !resourceScopeEntriesMatch(entry, item));
+  resourceScopeModalDraft.value = { ...resourceScopeModalDraft.value, [type]: items };
+};
+
+const syncResourceScopeActiveTabForDraft = () => {
+  const withOrphans = resourceOptionGroups.find((group) => modalOrphanSelections(group.key).length > 0);
+  if (withOrphans) {
+    resourceScopeActiveTab.value = withOrphans.key;
+    return;
+  }
+  const withSelection = resourceOptionGroups.find((group) => modalSelectedCount(group.key) > 0);
+  resourceScopeActiveTab.value = withSelection?.key ?? 'datasets';
+};
+
+const loadResourceOptions = async () => {
+  resourceOptionsLoading.value = true;
+  try {
+    const [datasets, knowledge, globalSkills, personalSkills, mcpTools] = await Promise.allSettled([
+      axios.get('/api/portal/metadata/datasets/accessible'),
+      axios.get('/api/portal/ragflow/datasets', { params: { page: 1, page_size: 100, include_missing: false } }),
+      // 与发消息时的 agent_id 同源（effectiveEmbedChatAgentId），保证「看到的禁用态」
+      // 与「实际生效的禁用」是同一个作用域。
+      axios.get('/api/portal/skills', {
+        params: { agent_id: effectiveEmbedChatAgentId.value || undefined },
+      }),
+      axios.get('/api/portal/skills/personal'),
+      axios.get('/api/portal/tools/mcp'),
+    ]);
+    if (datasets.status === 'fulfilled') {
+      const raw = datasets.value.data;
+      const list = Array.isArray(raw) ? raw : (raw?.data || raw?.datasets || []);
+      resourceOptions.datasets = list
+        .filter((item: any) => item.status === undefined || item.status === 1 || item.status === '1' || item.status === 'active')
+        .map((item: any) => ({
+          id: String(item.id || item.name),
+          name: item.display_name || item.name || item.dataset_name,
+          dataset_name: item.name || item.dataset_name,
+          description: item.description || item.remark || item.notes || `数据源：${item.data_source || '默认'}`,
+        }));
+    }
+    if (knowledge.status === 'fulfilled') {
+      const data = knowledge.value.data?.data;
+      const list = Array.isArray(data) ? data : (data?.datasets || data?.items || []);
+      resourceOptions.knowledge_bases = list
+        .filter((item: any) => item.status === undefined || item.status === 'active' || item.status === 1 || item.status === '1')
+        .map((item: any) => ({
+          id: String(item.id || item.dataset_id),
+          name: item.name || item.display_name || item.dataset_name,
+          dataset_name: item.id || item.dataset_id,
+          description: item.description || item.summary || item.notes || '暂无知识库描述',
+        }));
+    }
+    resourceOptions.skills = [];
+    for (const [result, scope] of [[globalSkills, 'global'], [personalSkills, 'personal']] as const) {
+      if (result.status === 'fulfilled') resourceOptions.skills.push(...(result.value.data?.data || [])
+        .filter((item: any) => isSkillEnabled(item.enabled))
+        // forbidden 由公共技能清单接口下发（个人技能接口不带该字段，按「未禁用」处理）；
+        // 归一成布尔后带下去，弹窗据此置灰——被禁技能仍要显示，只是不能勾选
+        .map((item: any) => ({ id: String(item.id), name: item.name, description: item.description, scope, forbidden: isSkillForbidden(item) })));
+    }
+    if (mcpTools.status === 'fulfilled') {
+      const raw = mcpTools.value.data;
+      const list = Array.isArray(raw) ? raw : (raw?.data || []);
+      resourceOptions.mcp_tools = list
+        .map((item: any) => ({
+          id: String(item.id || ''),
+          name: String(item.name || ''),
+          description: item.description || '',
+          server_name: item.server_name || '',
+          server_remark: item.server_remark || '',
+          scope: item.scope || 'global',
+        }))
+        .filter((item: any) => item.id && item.name && String(item.scope || '').toLowerCase() === 'personal');
+    } else {
+      resourceOptions.mcp_tools = [];
+    }
+    for (const group of resourceOptionGroups) {
+      const options = resourceOptions[group.key] || [];
+      const key = group.key;
+      resourceScope.value[key] = remapScopeSelections(resourceScope.value[key], options);
+      if (showResourceScopeModal.value) {
+        resourceScopeModalDraft.value[key] = remapScopeSelections(resourceScopeModalDraft.value[key], options);
+      }
+    }
+    resourceOptionsLoaded.value = true;
+  } finally {
+    resourceOptionsLoading.value = false;
+  }
+};
+
+/** 仅拉元数据集，供数据门户挂载匹配；避免顺带等待 RAGFlow/Skills。 */
+const ensureMountableMetadataDatasets = async () => {
+  if (resourceOptions.datasets.length) return;
+  try {
+    const res = await axios.get('/api/portal/metadata/datasets/accessible');
+    const raw = res.data;
+    const list = Array.isArray(raw) ? raw : (raw?.data || raw?.datasets || []);
+    resourceOptions.datasets = list
+      .filter((item: any) => item.status === undefined || item.status === 1 || item.status === '1' || item.status === 'active')
+      .map((item: any) => ({
+        id: String(item.id || item.name),
+        name: item.display_name || item.name || item.dataset_name,
+        dataset_name: item.name || item.dataset_name,
+        description: item.description || item.remark || item.notes || `数据源：${item.data_source || '默认'}`,
+      }));
+  } catch (error) {
+    console.warn('Failed to load mountable metadata datasets', error);
+  }
+};
+
+const closeResourceScopeModal = () => {
+  if (resourceScopeSaving.value) return;
+  showResourceScopeModal.value = false;
+};
+
+const openResourceScopeModal = () => {
+  resourceScopeModalDraft.value = cloneResourceScope(resourceScope.value);
+  syncResourceScopeActiveTabForDraft();
+  showResourceScopeModal.value = true;
+  if (!resourceOptionsLoaded.value) void loadResourceOptions();
+};
+
+const refreshResourceOptions = async () => {
+  resourceOptionsLoaded.value = false;
+  await loadResourceOptions();
+};
+
+const loadResourceScope = async () => {
+  if (!conversationId.value) return;
+  const requestedId = conversationId.value;
+  const requestId = ++resourceScopeLoadSequence;
+  try {
+    const res = await axios.get(`/api/v1/chat/conversation/${encodeURIComponent(requestedId)}/resource-scope`, { headers: embedAuthHeaders() });
+    if (requestId !== resourceScopeLoadSequence || conversationId.value !== requestedId) return;
+    resourceScope.value = {
+      ...emptyResourceScopeState(),
+      ...(res.data?.data || {}),
+      mcp_tools: Array.isArray(res.data?.data?.mcp_tools) ? res.data.data.mcp_tools : [],
+    };
+    syncResourceScopeDraftStrings(resourceScope.value);
+  } catch (error) { console.warn('[ResourceScope] load failed', error); }
+};
+
+const buildPersistableScope = (source: typeof resourceScope.value) => {
+  const normalizeItems = (items: any[]) => items
+    .filter((item) => item?.id !== undefined && item?.id !== null && String(item.id).trim())
+    .map((item) => ({
+      id: String(item.id).trim(),
+      name: item.name || String(item.id).trim(),
+      ...(item.dataset_name ? { dataset_name: item.dataset_name } : {}),
+      ...(item.scope ? { scope: item.scope } : {}),
+      ...(item.description ? { description: item.description } : {}),
+      ...(item.server_name ? { server_name: item.server_name } : {}),
+      ...(item.server_remark ? { server_remark: item.server_remark } : {}),
+    }));
+  return {
+    project_name: (source.project_name || '').trim(),
+    datasets: normalizeItems(source.datasets),
+    knowledge_bases: normalizeItems(source.knowledge_bases),
+    skills: normalizeItems(source.skills),
+    mcp_tools: normalizeItems(source.mcp_tools || []),
+  };
+};
+
+const persistResourceScope = async (scope: ReturnType<typeof buildPersistableScope>) => {
+  const res = await axios.put(
+    `/api/v1/chat/conversation/${encodeURIComponent(conversationId.value)}/resource-scope`,
+    scope,
+    { headers: embedAuthHeaders() },
+  );
+  const saved = res.data?.data || scope;
+  resourceScope.value = saved;
+  syncResourceScopeDraftStrings(saved);
+  return saved;
+};
+
+const mountMcpToolToSession = async (toolsInput: Array<{ id: string; name: string; description?: string; server_name?: string; server_remark?: string; scope?: string }> | { id: string; name: string; description?: string; server_name?: string; server_remark?: string; scope?: string }) => {
+  if (!conversationId.value) {
+    showToast('请先开始会话', 'error');
+    return;
+  }
+  const tools = (Array.isArray(toolsInput) ? toolsInput : [toolsInput])
+    .map((tool) => ({
+      id: String(tool?.id || '').trim(),
+      name: String(tool?.name || '').trim(),
+      description: tool?.description || '',
+      server_name: tool?.server_name || '',
+      server_remark: tool?.server_remark || '',
+      scope: tool?.scope || 'global',
+    }))
+    .filter((tool) => tool.id && tool.name);
+  if (!tools.length) return;
+
+  const existing = resourceScope.value.mcp_tools || [];
+  const existingNames = new Set(existing.map((item: any) => String(item.name || '').trim()).filter(Boolean));
+  const existingIds = new Set(existing.map((item: any) => String(item.id || '').trim()).filter(Boolean));
+  const toAdd = tools.filter((tool) => !existingNames.has(tool.name) && !existingIds.has(tool.id));
+  if (!toAdd.length) {
+    showToast(tools.length === 1 ? '该 MCP 工具已挂载到本会话' : '所选 MCP 工具均已挂载到本会话', 'info');
+    return;
+  }
+
+  const nextScope = {
+    ...resourceScope.value,
+    mcp_tools: [...existing, ...toAdd],
+  };
+  resourceScopeSaving.value = true;
+  try {
+    await persistResourceScope(buildPersistableScope(nextScope));
+    showToast(
+      toAdd.length === 1 ? `已挂载 MCP 工具：${toAdd[0]?.name || ''}` : `已挂载 ${toAdd.length} 个 MCP 工具`,
+      'success',
+    );
+  } catch (error) {
+    showToast('挂载 MCP 工具失败', 'error');
+  } finally {
+    resourceScopeSaving.value = false;
+  }
+};
+
+const pinMetadataDatasetToSession = async (datasetId: string) => {
+  if (!conversationId.value) {
+    showToast('请先开始会话', 'error');
+    return;
+  }
+  const id = String(datasetId || '').trim();
+  if (!id) return;
+  if (resourceScope.value.datasets.some((item: any) => String(item.id) === id)) {
+    showToast('该数据集已设为本会话默认', 'info');
+    return;
+  }
+  const selected =
+    (resourceOptions.datasets || []).find((item: any) => String(item.id) === id) || { id, name: id };
+  const nextScope = {
+    ...resourceScope.value,
+    datasets: [...resourceScope.value.datasets, selected],
+  };
+  resourceScopeSaving.value = true;
+  try {
+    await persistResourceScope(buildPersistableScope(nextScope));
+    const dsName = selected.name || selected.display_name || selected.dataset_name || id;
+    showToast(`已设为本会话默认：后续提问将默认锁定在【${dsName}】`, 'success');
+  } catch (error) {
+    showToast('设置会话默认范围失败', 'error');
+  } finally {
+    resourceScopeSaving.value = false;
+  }
+};
+
+const unpinMetadataDatasetFromSession = async (datasetId: string) => {
+  if (!conversationId.value) {
+    showToast('请先开始会话', 'error');
+    return;
+  }
+  const id = String(datasetId || '').trim();
+  if (!id) return;
+  const nextScope = {
+    ...resourceScope.value,
+    datasets: resourceScope.value.datasets.filter((item: any) => String(item.id) !== id),
+  };
+  resourceScopeSaving.value = true;
+  try {
+    await persistResourceScope(buildPersistableScope(nextScope));
+    showToast('已取消本会话默认，问数将恢复默认权限范围', 'info');
+  } catch (error) {
+    showToast('取消会话默认失败', 'error');
+  } finally {
+    resourceScopeSaving.value = false;
+  }
+};
+
+const saveResourceScope = async () => {
+  if (!conversationId.value) {
+    showToast('请先开始会话', 'error');
+    return;
+  }
+  const draft = resourceScopeModalDraft.value;
+  if (!draft.project_name.trim()) {
+    showToast('请先填写项目名称', 'warning');
+    return;
+  }
+  resourceScopeSaving.value = true;
+  try {
+    await persistResourceScope(buildPersistableScope(draft));
+    showResourceScopeModal.value = false;
+    showToast('项目会话资源已保存', 'success');
+  } catch (error) {
+    showToast('资源范围更新失败', 'error');
+  } finally {
+    resourceScopeSaving.value = false;
+  }
+};
+
+let requestedConversationId = "";
+/**
+ * 当前界面上的会话所属身份。身份与它不一致时（同一 tab 换用户登录、宿主换票），
+ * 必须把上一位用户的会话现场整个丢掉，而不能只是换个存储键。
+ */
+let activeIdentityKey = "";
+let resourceScopeLoadSequence = 0;
+// 需为 ref：`isAwaitingHostInitConfig` 要据此判断宿主是否已下发凭据，普通 let 不会被 computed 追踪。
+const initConfigReceived = ref(false);
+let pendingUrlTokenInitTimer: number | null = null;
+let conversationInitializationGeneration = 0;
+const LEGACY_CONVERSATION_STORAGE_KEY = "yovole_embed_conv_id";
+const INSTANCE_CONVERSATION_STORAGE_PREFIX = "yovole_embed_conv_id:";
+/** 用户维度标记：键形如 `yovole_embed_conv_id:u:<identity>[:<instance>]`。 */
+const USER_SCOPED_STORAGE_SEGMENT = "u";
+
+const normalizeEmbedInstanceId = (value: unknown): string => {
+  const normalized = String(value ?? "").trim();
+  return normalized;
+};
+
+/**
+ * 身份键：会话与草稿快照的存储都必须带上它。
+ *
+ * 存储键过去只按 `instance_id` 分桶，与「谁在登录」无关：同一浏览器换用户登录后，
+ * 后一位用户会直接读到前一位用户的 conversation_id，进而加载、甚至继续写入
+ * 对方的会话。会话 ID 只是字符串，身份换了它不会自己换，所以存储必须带上身份维度。
+ */
+const identityKeyFromUserData = (data: any): string => {
+  const userId = String(data?.user_id ?? "").trim();
+  if (userId) return `id:${userId}`;
+  const userName = String(data?.user_name ?? "").trim();
+  return userName ? `name:${userName}` : "";
+};
+
+const currentIdentityKey = (): string => identityKeyFromUserData(currentUser.value);
+
+/**
+ * 当前身份下的会话存储键；身份未知时返回空串（此时既不读也不写）。
+ *
+ * 刻意**不回退**读取任何没有用户维度的旧键：那正是串会话的来源，宁可当作没有记录
+ * ——代价只是升级后重新开一个空会话，服务端历史与日志页都不受影响。
+ */
+const conversationStorageKey = (): string => {
+  const identity = currentIdentityKey();
+  if (!identity) return "";
+  const scope = `${USER_SCOPED_STORAGE_SEGMENT}:${encodeURIComponent(identity)}`;
+  const instanceId = normalizeEmbedInstanceId(config.instanceId);
+  return instanceId
+    ? `${INSTANCE_CONVERSATION_STORAGE_PREFIX}${scope}:${encodeURIComponent(instanceId)}`
+    : `${INSTANCE_CONVERSATION_STORAGE_PREFIX}${scope}`;
+};
+
+/** 本标签页自己的会话指针前缀（sessionStorage）。 */
+const TAB_CONVERSATION_STORAGE_PREFIX = "nzi_embed_tab_conv_id:";
+
+/**
+ * 当前标签页的会话指针键。
+ *
+ * localStorage 是**跨标签共享**的：只写它的话，A 标签切到会话 X 后，B 标签刷新会读到
+ * 同一条指针，直接进到 A 的会话——表现为「两个窗口明明是不同会话，刷新后变成一个」。
+ * 会话都成了同一个，会话级配置（专家、资源范围）自然也就一致了。
+ *
+ * sessionStorage 的边界是「tab + origin」，正好是标签级隔离；同标签刷新后仍然保留，
+ * 所以既不会串标签，也不影响「刷新续接」。身份与实例维度沿用 localStorage 那套分桶。
+ */
+const tabConversationStorageKey = (): string => {
+  const identity = currentIdentityKey();
+  if (!identity) return "";
+  const scope = `${USER_SCOPED_STORAGE_SEGMENT}:${encodeURIComponent(identity)}`;
+  const instanceId = normalizeEmbedInstanceId(config.instanceId);
+  return instanceId
+    ? `${TAB_CONVERSATION_STORAGE_PREFIX}${scope}:${encodeURIComponent(instanceId)}`
+    : `${TAB_CONVERSATION_STORAGE_PREFIX}${scope}`;
+};
+
+const readStoredConversationId = (): string => {
+  try {
+    // 本标签的指针优先：它代表「这个窗口正在看哪个会话」，不能被别的标签覆盖。
+    const tabKey = tabConversationStorageKey();
+    const tabValue = tabKey ? (sessionStorage.getItem(tabKey) || "").trim() : "";
+    if (tabValue) return tabValue;
+    // 新标签没有自己的指针时，退回跨标签共享的那条，保留「新开窗口续接上次会话」的体验。
+    const key = conversationStorageKey();
+    return key ? (localStorage.getItem(key) || "").trim() : "";
+  } catch {
+    return "";
+  }
+};
+
+const clearStoredConversationId = () => {
+  try {
+    const tabKey = tabConversationStorageKey();
+    if (tabKey) sessionStorage.removeItem(tabKey);
+    const key = conversationStorageKey();
+    if (key) localStorage.removeItem(key);
+  } catch {
+    /* 存储不可用时无需处理 */
+  }
+};
+
+const persistConversationId = (cid: string) => {
+  if (!cid) return;
+  try {
+    // 既写本标签（隔离用），也写共享那份（新标签续接用）。
+    const tabKey = tabConversationStorageKey();
+    if (tabKey) sessionStorage.setItem(tabKey, cid);
+    const key = conversationStorageKey();
+    if (key) localStorage.setItem(key, cid);
+  } catch {
+    /* 存储不可用时无需处理 */
+  }
+};
+
+/**
+ * 清掉所有没有用户维度的历史键（无 instance 维度的旧键、以及带 instance 但没有用户
+ * 维度的键）。它们没有身份边界，留着只会被误读，所以只清理、绝不读取。
+ */
+const purgeLegacyConversationStorage = () => {
+  try {
+    localStorage.removeItem(LEGACY_CONVERSATION_STORAGE_KEY);
+    const scopedPrefix = `${INSTANCE_CONVERSATION_STORAGE_PREFIX}${USER_SCOPED_STORAGE_SEGMENT}:`;
+    const staleKeys: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index) || "";
+      if (!key.startsWith(INSTANCE_CONVERSATION_STORAGE_PREFIX)) continue;
+      if (key.startsWith(scopedPrefix)) continue;
+      staleKeys.push(key);
+    }
+    staleKeys.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    /* 存储不可用时无需处理 */
+  }
+};
+
+/**
+ * 流式草稿快照：EmbedChat 因平台内路由切换被卸载重建时，本轮内容尚未落库，
+ * 重建后 messages 为空会退回欢迎页、已输出的思考随之消失。这里按「实例 + 会话」
+ * 把草稿写入 sessionStorage（与嵌入凭据同样的 tab 隔离口径），挂载后先还原，
+ * 等落库终态到达时由运行恢复器覆盖并清除。快照是尽力而为的体验兜底：任何存储
+ * 异常都不得影响主流程。
+ */
+const STREAM_SNAPSHOT_STORAGE_PREFIX = "nzi_embed_stream_snapshot:";
+const STREAM_SNAPSHOT_WRITE_INTERVAL_MS = 1500;
+
+const streamSnapshotStorageKey = (cid: string): string => {
+  // 同样带身份维度：换用户后重建页面时，绝不能把上一位用户的流式草稿还原到
+  // 新用户的界面上（草稿正文就是从对方会话里抄来的）。
+  // 身份未知（尚未鉴权成功）时**不产生键**：绝不回退到 shared/unknown 桶，否则匿名态
+  // 落盘的草稿会被随后登录的任意用户读到（草稿正文就是会话内容）。
+  const identity = currentIdentityKey();
+  if (!identity || !cid) return "";
+  const instanceBucket = config.instanceId ? encodeURIComponent(config.instanceId) : "default";
+  return `${STREAM_SNAPSHOT_STORAGE_PREFIX}${USER_SCOPED_STORAGE_SEGMENT}:${encodeURIComponent(identity)}:${instanceBucket}:${encodeURIComponent(cid)}`;
+};
+
+/** 清掉没有用户维度的历史草稿键：只清理、不读取。 */
+const purgeLegacyStreamSnapshots = () => {
+  try {
+    const scopedPrefix = `${STREAM_SNAPSHOT_STORAGE_PREFIX}${USER_SCOPED_STORAGE_SEGMENT}:`;
+    const staleKeys: string[] = [];
+    for (let index = 0; index < sessionStorage.length; index += 1) {
+      const key = sessionStorage.key(index) || "";
+      if (!key.startsWith(STREAM_SNAPSHOT_STORAGE_PREFIX)) continue;
+      if (key.startsWith(scopedPrefix)) continue;
+      staleKeys.push(key);
+    }
+    staleKeys.forEach((key) => sessionStorage.removeItem(key));
+  } catch {
+    /* 存储不可用时无需处理 */
+  }
+};
+
+const clearStreamSnapshot = (cid: string) => {
+  if (!cid) return;
+  try {
+    const key = streamSnapshotStorageKey(cid);
+    if (!key) return;
+    sessionStorage.removeItem(key);
+  } catch {
+    // 隐私模式或配额异常：忽略。
+  }
+};
+
+const STREAM_REPLAY_POLL_INTERVAL_MS = 1000;
+
+/** 事件续显游标：lastSeq 会随快照持久化，保证重复恢复不会叠加正文。 */
+// @conversation-scoped: streamReplayCursor
+const streamReplayCursor = ref<{ lastSeq: number; traceId: string }>({ lastSeq: 0, traceId: "" });
+let streamReplayTimer: ReturnType<typeof setTimeout> | null = null;
+let streamReplayInFlight = false;
+/** 本轮是否已完成首次游标对齐：对齐只做一次，避免历史事件被重放。 */
+// @conversation-scoped: streamReplayPrimed
+let streamReplayPrimed = false;
+/**
+ * 本次恢复累计补回的事件条数（恢复卡片展示用）。
+ *
+ * 与游标分开记：游标是后端 INCR 分配的事件序号，和日志 list 索引解耦且受 LTRIM
+ * 截断，序号远大于真正补回的条数——拿游标展示会让用户以为加载了成倍的量。
+ */
+// @conversation-scoped: recoverySyncedEventCount
+let recoverySyncedEventCount = 0;
+
+/**
+ * 切换会话会主动 `resetRunStatus()`，由此触发的「运行结束」watcher 分支必须被抑制：
+ * 那是「换会话」，不是「本轮结束」。
+ */
+let suppressRunTerminalSyncForConversationSwitch = false;
+
+/** 停止续显轮询。游标是幂等依据，任何情况下都不在这里清空。 */
+const clearStreamReplayTimer = () => {
+  if (streamReplayTimer !== null) {
+    clearTimeout(streamReplayTimer);
+    streamReplayTimer = null;
+  }
+};
+
+const persistStreamSnapshot = (
+  cid: string,
+  draft: Message,
+  userMsg?: Message,
+  cursor?: { lastSeq?: number },
+) => {
+  if (!cid) return;
+  const snapshot = buildEmbedStreamSnapshot({
+    conversationId: cid,
+    traceId: draft.trace_id,
+    lastSeq: cursor?.lastSeq,
+    user: userMsg ? { content: userMsg.content, timestamp: userMsg.timestamp } : null,
+    draft: {
+      // 本端读流失败的错误只提示当前界面，不随快照还原（见 helper 注释）。
+      content: stripClientStreamErrorSuffix(draft.content, draft.clientTransportErrorSuffix),
+      reasoningContent: draft.reasoningContent,
+      processTimeline: draft.processTimeline,
+      agentName: draft.agentName,
+      agentDisplayName: draft.agentDisplayName,
+      agentType: draft.agentType,
+      agentAvatarUrl: draft.agentAvatarUrl,
+      // 交互态必须随快照落盘：事件日志被 LTRIM/TTL 截断时，刷新后待确认卡片
+      // 就没有第二个来源了，后台任务会一直挂到确认超时。
+      pendingPermission: draft.pendingPermission as unknown as Record<string, unknown> | undefined,
+      pendingExternalExecution:
+        draft.pendingExternalExecution as unknown as Record<string, unknown> | undefined,
+      userQuestion: draft.userQuestion as unknown as Record<string, unknown> | undefined,
+      businessConfirmation:
+        draft.businessConfirmation as unknown as Record<string, unknown> | undefined,
+    },
+  });
+  if (!snapshot) return;
+  const key = streamSnapshotStorageKey(cid);
+  if (!key) return;
+  try {
+    sessionStorage.setItem(key, JSON.stringify(snapshot));
+  } catch {
+    // 超配额或隐私模式：放弃本次快照，不影响对话本身。
+  }
+};
+
+const readStreamSnapshot = (cid: string): EmbedStreamSnapshot | null => {
+  try {
+    const key = streamSnapshotStorageKey(cid);
+    if (!key) return null;
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as EmbedStreamSnapshot;
+    if (!isEmbedStreamSnapshotUsable(parsed, cid)) {
+      clearStreamSnapshot(cid);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+/** 在途流式的草稿引用：供节流写入与卸载前强制落盘使用。 */
+// @conversation-scoped: activeStreamDraft
+let activeStreamDraft: { conversationId: string; msg: Message; lastAppliedSeq?: number } | null = null;
+let lastStreamSnapshotAt = 0;
+
+/**
+ * 本轮助手消息：终态收敛收尾要落定的那一条。
+ *
+ * `agentMsg` 是 sendMessageInternal 内的局部 ref，顶层收尾函数取不到它——直接引用会把
+ * ReferenceError 拼进回答正文。这里只用顶层可解析的来源：在途草稿优先，否则取消息列表
+ * 末尾的助手消息（两条终态收敛路径都会先清掉草稿，所以必须有兜底）。
+ */
+const currentStreamAgentMessage = (): Message | null => {
+  if (activeStreamDraft?.msg) return activeStreamDraft.msg;
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const candidate = messages.value[index];
+    // 首屏历史末尾是 system 分隔符（"以上是历史会话…"），不是本轮助手消息；
+    // 收尾绝不能落到它身上。
+    if (candidate.role === "system") continue;
+    if (candidate.role === "user") return null;
+    return candidate;
+  }
+  return null;
+};
+
+const currentStreamUserMessage = (): Message | undefined => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    if (messages.value[index].role === "user") return messages.value[index];
+  }
+  return undefined;
+};
+
+const maybePersistStreamSnapshot = (force = false) => {
+  const active = activeStreamDraft;
+  if (!active || !active.conversationId) return;
+  const now = Date.now();
+  if (!force && now - lastStreamSnapshotAt < STREAM_SNAPSHOT_WRITE_INTERVAL_MS) return;
+  lastStreamSnapshotAt = now;
+  persistStreamSnapshot(active.conversationId, active.msg, currentStreamUserMessage(), {
+    // 落盘进度取「游标」与「草稿已应用进度」的较大者：游标可能因会话重置归零，而草稿
+    // 的进度才是界面真实渲染到哪。取小了会让切回后重放旧事件、正文重复。
+    lastSeq: Math.max(
+      Number(streamReplayCursor.value.lastSeq || 0) || 0,
+      Number(active.lastAppliedSeq || 0) || 0,
+    ),
+  });
+};
+
+/**
+ * 首屏历史 + 快照都落地后的钩子（在 onMounted 内接入运行恢复器）。
+ *
+ * 恢复不能只在 run-status 为 active 时启动：任务可能在「首屏历史发出」与「run-status
+ * 返回」之间跑完，此时没有任何状态翻转事件，必须由这里补一次有界的终态收敛。
+ */
+let afterStreamSnapshotRestored: (() => void) | null = null;
+
+/** 快照里是否有可还原的助手草稿内容（正文 / 思考 / 时间线 / 待确认交互态）。 */
+const hasRestorableDraft = (draft: EmbedStreamSnapshot["draft"] | null | undefined): boolean => {
+  if (!draft) return false;
+  return Boolean(
+    String(draft.content || "").trim() ||
+      String(draft.reasoningContent || "").trim() ||
+      (Array.isArray(draft.processTimeline) && draft.processTimeline.length > 0) ||
+      draft.pendingPermission ||
+      draft.pendingExternalExecution ||
+      draft.userQuestion ||
+      draft.businessConfirmation,
+  );
+};
+
+/**
+ * 挂载后还原草稿：草稿自带 trace_id，落库终态到达时会被 `planHistorySync` 精确命中
+ * 并覆盖，因此这里只需把它放回消息列表即可。
+ *
+ * 只还原了用户提问（首片正文还没到）时不再伪造一条空的助手气泡：交给运行恢复器
+ * 从事件日志 / Redis 会话历史补出草稿，避免界面上出现永远空白的回答。
+ */
+const restoreEmbedStreamSnapshot = async (expectedGeneration?: number) => {
+  const cid = conversationId.value;
+  if (!cid) return;
+  let shouldKickRecovery = false;
+  try {
+    if (expectedGeneration !== undefined && expectedGeneration !== conversationInitializationGeneration) {
+      return;
+    }
+    // 无论有没有快照，首屏历史落定后都值得做一次有界收敛：
+    // 任务可能在历史请求与 run-status 之间刚好跑完，此时没有任何状态翻转事件。
+    shouldKickRecovery = true;
+    const snapshot = readStreamSnapshot(cid);
+    if (!snapshot) return;
+    if (
+      (expectedGeneration !== undefined && expectedGeneration !== conversationInitializationGeneration) ||
+      conversationId.value !== cid
+    ) {
+      return;
+    }
+
+    const traceId = String(snapshot.traceId || "").trim();
+    const terminalAlreadyVisible = traceId
+      ? messages.value.some(message => message.role === "agent" && message.trace_id === traceId)
+      : false;
+    if (terminalAlreadyVisible) {
+      // 落库终态已经在界面上，草稿没有价值。
+      clearStreamSnapshot(cid);
+      return;
+    }
+
+    const restored: Message[] = [];
+    const userContent = String(snapshot.user?.content || "");
+    // 只跟最后一条用户消息比：同一会话里重复提问时，按全列表匹配会误判「提问已存在」，
+    // 把快照里本轮的提问吞掉。
+    const lastLocalUser = [...messages.value].reverse().find(message => message.role === "user");
+    const userAlreadyVisible = userContent
+      ? String(lastLocalUser?.content || "") === userContent
+      : true;
+    if (userContent && !userAlreadyVisible) {
+      restored.push({
+        id: Date.now(),
+        trace_id: snapshot.traceId,
+        role: "user",
+        content: userContent,
+        logs: [],
+        isThinking: false,
+        feedback: null,
+        timestamp: snapshot.user?.timestamp,
+      });
+    }
+    let restoredAgent: Message | null = null;
+    if (hasRestorableDraft(snapshot.draft)) {
+      restoredAgent = {
+        id: Date.now() + 1,
+        trace_id: snapshot.traceId,
+        role: "agent",
+        content: snapshot.draft?.content || "",
+        reasoningContent: snapshot.draft?.reasoningContent,
+        processTimeline: snapshot.draft?.processTimeline as Message["processTimeline"],
+        logs: [],
+        isThinking: false,
+        feedback: null,
+        agentName: snapshot.draft?.agentName,
+        agentDisplayName: snapshot.draft?.agentDisplayName,
+        agentType: snapshot.draft?.agentType,
+        agentAvatarUrl: snapshot.draft?.agentAvatarUrl,
+        timestamp: snapshot.user?.timestamp,
+        // 交互态是 upsert 终态：先还原，事件续显若还能拉到请求事件会再次覆盖为最新状态。
+        pendingPermission:
+          snapshot.draft?.pendingPermission as unknown as Message["pendingPermission"],
+        pendingExternalExecution:
+          snapshot.draft?.pendingExternalExecution as unknown as Message["pendingExternalExecution"],
+        userQuestion: snapshot.draft?.userQuestion as unknown as Message["userQuestion"],
+        businessConfirmation:
+          snapshot.draft?.businessConfirmation as unknown as Message["businessConfirmation"],
+      };
+      restored.push(restoredAgent);
+    }
+    if (!restored.length) return;
+
+    messages.value = [...messages.value, ...restored];
+
+    if (restoredAgent) {
+      // 登记续显目标：切回后事件要点进这条草稿，卸载前也要靠它强制落盘。
+      activeStreamDraft = {
+        conversationId: cid,
+        msg: restoredAgent,
+        lastAppliedSeq: Number(snapshot.lastSeq || 0) || 0,
+      };
+      recoveryGraceExpired.value = false;
+      // 草稿已还原：恢复卡片立即反映「已接管续显」。
+      refreshRecoveryCard();
+      // 游标随快照恢复：after_seq 从已渲染的进度续起，避免重复叠加正文。
+      streamReplayCursor.value = {
+        lastSeq: Number(snapshot.lastSeq || 0) || 0,
+        traceId: String(snapshot.traceId || ""),
+      };
+      await nextTick();
+      scrollToBottom(true);
+    } else if (!userAlreadyVisible) {
+      // 只还原了提问：先让用户看见本轮问题，助手草稿由恢复器补建。
+      await nextTick();
+      scrollToBottom();
+    }
+  } finally {
+    const generationStillCurrent =
+      expectedGeneration === undefined || expectedGeneration === conversationInitializationGeneration;
+    if (
+      shouldKickRecovery &&
+      generationStillCurrent &&
+      !embedUnmounted &&
+      cid === conversationId.value
+    ) {
+      afterStreamSnapshotRestored?.();
+    }
+  }
+};
+
+const shouldUseServerActiveConversation = () => Boolean(config.token);
+const activeConversationRequestParams = () => (
+  config.instanceId ? { instance_id: config.instanceId } : undefined
+);
+
+const cancelPendingUrlTokenInitialization = () => {
+  if (pendingUrlTokenInitTimer === null) return;
+  window.clearTimeout(pendingUrlTokenInitTimer);
+  pendingUrlTokenInitTimer = null;
+};
+
+const scheduleUrlTokenInitialization = () => {
+  if (!config.token || initConfigReceived.value) return;
+  cancelPendingUrlTokenInitialization();
+  if (config.instanceId) {
+    void initChat();
+    return;
+  }
+  // 给父页面一个握手窗口，让 INIT_CONFIG 中的 instance_id 先于 URL token 初始化生效。
+  pendingUrlTokenInitTimer = window.setTimeout(() => {
+    pendingUrlTokenInitTimer = null;
+    if (!initConfigReceived.value && config.token) void initChat();
+  }, 250);
+};
+
+/** 无显式凭据时的引导：靠 embed_session Cookie 完成认证。
+ *
+ * 清除地址栏里的长期 Key 之后 URL 不再提供凭据，`config.token` 为空，
+ * `scheduleUrlTokenInitialization` 会直接 return；此时若又收不到 INIT_CONFIG，
+ * 就**没有任何代码发起认证**，刷新后页面会停在失败态（已实测到的故障）。
+ * 这里给出同样带握手窗口的兜底：让 INIT_CONFIG 先到，逾期则用 Cookie 认证。
+ */
+const scheduleCookieOnlyInitialization = () => {
+  if (initConfigReceived.value || config.token) return;
+  cancelPendingUrlTokenInitialization();
+  if (config.instanceId) {
+    void initChat();
+    return;
+  }
+  // 与 token 路径一致，保留握手窗口，避免抢在父页面 INIT_CONFIG 之前认证
+  pendingUrlTokenInitTimer = window.setTimeout(() => {
+    pendingUrlTokenInitTimer = null;
+    if (!initConfigReceived.value && !config.token) void initChat();
+  }, 250);
+};
+
+const embedAuthHeaders = (): Record<string, string> | undefined => {
+  if (!config.token) return undefined;
+  return {
+    Authorization: `Bearer ${config.token}`,
+    "X-API-Key": config.token,
+  };
+};
+
+/**
+ * 切回页面 / 刷新后继续显示本轮正在产生的思考、工具时间线与正文。
+ * 事件日志只做过程可视化：终态仍由 syncLatestSessionHistory 以落库历史为准，
+ * 因此这里的 gap 只告警、不中断。
+ */
+const pollConversationStreamEvents = async () => {
+  const cid = conversationId.value;
+  if (!cid || streamReplayInFlight) return;
+  // 草稿必须属于当前会话：切换会话瞬间的残留草稿（属于上一个会话）绝不能当续显目标，
+  // 否则事件会写进已脱离消息列表的孤儿对象，而当前会话永远看不到进度。
+  if (activeStreamDraft && !isDraftBoundToConversation(activeStreamDraft, cid)) {
+    activeStreamDraft = null;
+    streamReplayPrimed = false;
+    // 草稿槽被清空后恢复器/输入锁判据要立刻跟上，避免残留的 recoveryPending 继续轮询。
+    refreshRecoveryCard();
+  }
+  streamReplayInFlight = true;
+  try {
+    // 幂等防线的最后一道：以「草稿已应用到哪」与游标的较大者作为起点。
+    // 游标会随快照恢复 / 会话重置归零，一旦它落后于草稿的真实进度，旧事件就会被
+    // 再叠加一遍——表现为同一条回复里整段正文重复。
+    const draftAppliedSeq = Math.max(0, Number(activeStreamDraft?.lastAppliedSeq ?? 0) || 0);
+    const afterSeq = Math.max(Number(streamReplayCursor.value.lastSeq || 0) || 0, draftAppliedSeq);
+    const response = await axios.get(
+      `/api/v1/chat/conversation/${encodeURIComponent(cid)}/stream-events`,
+      {
+        params: { after_seq: afterSeq },
+        headers: embedAuthHeaders(),
+      },
+    );
+    // await 期间可能已经切走：这批结果属于上一个会话，直接丢弃，否则会把它的进度
+    // 写进当前会话的草稿、或把游标推到一个不相干的序号上。
+    if (conversationId.value !== cid) return;
+    const data = (response.data?.data || {}) as Record<string, any>;
+    const plan = planStreamReplay(data.events, {
+      lastSeq: afterSeq,
+      traceId: streamReplayCursor.value.traceId,
+    });
+    if (plan.gap) {
+      console.warn("[YltEmbedChat] 事件日志出现断层，过程展示可能不完整，终态仍以历史为准");
+    }
+    const replayTarget = activeStreamDraft?.msg ?? null;
+    if (replayTarget) {
+      const replayEvents = plan.events as Record<string, any>[];
+      // 判定同样以「有效起点」为准：草稿进度领先于游标时不属于首次拉取，绝不能清空重建，
+      // 否则会先清掉已有正文、再只补增量，内容反而丢失。
+      const isFirstPoll = shouldResetDraftBeforeReplay(
+        { lastSeq: afterSeq },
+        {
+          hasContent: Boolean(
+            String(replayTarget.content || "").trim() ||
+              (Array.isArray(replayTarget.processTimeline) && replayTarget.processTimeline.length > 0),
+          ),
+        },
+        streamReplayPrimed,
+      );
+      if (isFirstPoll && !plan.gap && replayEvents.length > 0) {
+        // 切回 / 刷新后的首次拉取：草稿只是「切走瞬间」的前缀，而日志含切走期间后台
+        // 新产出的全部事件。直接重放会把前缀叠加一遍（逐条 delta 达不到去重阈值），
+        // 只对齐游标又会让切走期间的内容永久缺失——所以先清空累加字段，再整体重建。
+        resetDraftForReplay(replayTarget);
+        // 内容已清空：应用进度同步归位到本次起点，异常中断也不会跳过后续事件。
+        if (activeStreamDraft) activeStreamDraft.lastAppliedSeq = afterSeq;
+      }
+      // 断层（日志被 LTRIM 截断）时不清空重建：快照里的内容可能比残缺日志更完整，缺口
+      // 交给历史终态同步兜底。但**仍然要应用**这批事件——afterSeq 取自快照/游标进度，
+      // 拉到的都是进度之后的增量，不会覆盖已有内容；若在此丢弃，它们会随游标推进被永久
+      // 跳过（切走期间的过程时间线永久缺失）。
+      const shouldReplayEvents = !isFirstPoll || replayEvents.length > 0;
+      if (shouldReplayEvents) {
+        for (const event of replayEvents) {
+          applyPermissionStreamEvent(replayTarget, event, { replay: true });
+        }
+        recoverySyncedEventCount += replayEvents.length;
+        if (replayEvents.length) {
+          await nextTick();
+          scrollToBottom();
+        }
+      }
+      streamReplayPrimed = true;
+      streamReplayCursor.value = { lastSeq: plan.lastSeq, traceId: String(replayTarget.trace_id || "") };
+      // 草稿自身记下已应用到的 seq：即便游标将来归零，也不会重放旧事件。
+      if (activeStreamDraft) {
+        activeStreamDraft.lastAppliedSeq = Math.max(draftAppliedSeq, Number(plan.lastSeq || 0) || 0);
+      }
+      maybePersistStreamSnapshot(true);
+      // 进度推进了：刷新恢复卡片上的阶段 / 步数 / 已同步事件数。
+      refreshRecoveryCard();
+    } else {
+      streamReplayCursor.value = { ...streamReplayCursor.value, lastSeq: plan.lastSeq };
+    }
+    // run_available=false 表示运行锁查询本身不可信（Redis/配置异常），不得据此永久
+    // 停掉续显；只有「确认已结束」且草稿已经收敛时才停。终态同步成功后也会清定时器。
+    if (data.run_active === false && data.run_available !== false && !activeStreamDraft) {
+      // 本轮已结束且没有待收敛草稿：停止续显，转交历史终态同步。
+      clearStreamReplayTimer();
+    }
+  } catch (error) {
+    console.warn("[YltEmbedChat] 拉取会话流事件失败", error);
+  } finally {
+    streamReplayInFlight = false;
+  }
+};
+
+/** 只在页面可见时轮询；hidden 时仅暂停，游标保留在原处。 */
+const scheduleStreamReplay = () => {
+  clearStreamReplayTimer();
+  if (document.visibilityState !== "visible") return;
+  // 续显接管意味着 SSE 已不再推进（切页面回来 / 流已静默）。提示交给恢复卡片：
+  // 它装得下后台状态、执行阶段与同步进度，并且可以被用户手动关闭。
+  refreshRecoveryCard();
+  streamReplayTimer = setTimeout(async () => {
+    await pollConversationStreamEvents();
+    if (streamReplayTimer !== null) scheduleStreamReplay();
+  }, STREAM_REPLAY_POLL_INTERVAL_MS);
+};
+
+const {
+  remoteRunActive,
+  remoteRunBusy,
+  statusUnknown,
+  refresh: refreshRemoteRunStatus,
+  stopPolling: stopRemoteRunPolling,
+  markOutputCompleted,
+  markRunStarted,
+  resetRunStatus,
+} = useConversationRunStatus(async (cid) => {
+  const response = await axios.get(
+    `/api/v1/chat/conversation/${encodeURIComponent(cid)}/run-status`,
+    { headers: embedAuthHeaders() },
+  );
+  // 包络失败（HTTP 200 + 错误 payload）同样代表「查不到」：必须返回 available=false，
+  // 让控制器保留上次锁态并重试，而不是把空 body 当成 active=false。
+  if (!isApiSuccess(response.data)) {
+    return { active: false, available: false, trace_id: null, ttl_seconds: null };
+  }
+  const body = (response.data?.data || {}) as Record<string, any>;
+  // 沙箱降级状态：后端在会话降级为本地执行时置位，待沙箱恢复后自动清除。
+  if (body && body.sandbox_degraded && body.sandbox_degraded_message) {
+    sandboxDegradedMessage.value = String(body.sandbox_degraded_message);
+  } else {
+    sandboxDegradedMessage.value = "";
+  }
+  return body;
+});
+
+const refreshCurrentRunStatus = () => (
+  conversationId.value
+    ? refreshRemoteRunStatus(conversationId.value)
+    : Promise.resolve(false)
+);
+
+// --- 恢复提示卡片 ---
+// 切页面回来时用卡片替代原来的 toast：装得下「后台在不在跑、跑到哪、要不要刷新」，
+// 也补掉了此前「快照没还原成功 → 连 toast 都不会出现」的静默场景（runActive 为真但
+// 没有草稿时同样提示）。决策收敛在 planRecoveryCard 纯函数里，这里只做状态转发。
+const RECOVERY_CARD_DONE_VISIBLE_MS = 3000;
+const recoveryCardDismissedForTurn = ref(false);
+const recoveryCardTerminalApplied = ref(false);
+// 本轮是否真的展示过恢复提示：没展示过就不该在收尾时补一句「内容已补齐」。
+const recoveryCardEngagedForTurn = ref(false);
+const recoveryCardState = ref<RecoveryCardState>({ phase: "hidden", message: "" });
+/**
+ * 界面上是否还有一份「未收敛的在途草稿」。
+ *
+ * 这是恢复器的第二驱动力：run-status 查询失败、或任务恰好在本页挂载的窗口内结束时，
+ * `remoteRunActive` 会一直是 false，但草稿还在、终态还没到——只靠 run-status 就等于
+ * 没人收敛。该值由 `refreshRecoveryCard()` 在所有草稿/流状态变更点统一刷新。
+ */
+const recoveryPending = ref(false);
+/**
+ * 运行态长期无法确认时的兜底窗口。
+ *
+ * 不能让「查不到 run-status + 草稿一直在」永久锁住输入框：超过窗口后停止收敛并解锁，
+ * 草稿与已输出内容保留在界面上，用户可自行刷新或重发。
+ */
+const recoveryGraceExpired = ref(false);
+let recoveryUnknownCycles = 0;
+const RECOVERY_UNKNOWN_MAX_CYCLES = 40;
+/** 只有「可能仍在跑」时才锁输入：运行态已确认结束的草稿收敛不再阻塞用户。 */
+const recoveryLocking = computed(
+  () => recoveryPending.value && (remoteRunActive.value || statusUnknown.value),
+);
+let recoveryCardDoneTimer: any = null;
+
+const clearRecoveryCardDoneTimer = () => {
+  if (recoveryCardDoneTimer) {
+    clearTimeout(recoveryCardDoneTimer);
+    recoveryCardDoneTimer = null;
+  }
+};
+
+/** 草稿时间线里最后一条「工具/步骤」标题，作为卡片上的执行阶段摘要。 */
+const recoveryStageLabel = () => {
+  const timeline = activeStreamDraft?.msg.processTimeline;
+  if (!Array.isArray(timeline)) return "";
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const item = timeline[index];
+    if (item && item.kind === "log" && item.title) return String(item.title);
+  }
+  return "";
+};
+
+const refreshRecoveryCard = () => {
+  // 草稿在途 = 还有未收敛的内容：它让恢复器在 run-status 未知/已结束但终态未到
+  // 的时间窗里也继续收敛。流仍在读（streamInFlight）时由 SSE 自己推进，不算恢复态。
+  recoveryPending.value =
+    activeStreamDraft !== null && !streamInFlight && !embedUnmounted && !recoveryGraceExpired.value;
+  const draftTimeline = activeStreamDraft?.msg.processTimeline;
+  const next = planRecoveryCard({
+    runActive: remoteRunActive.value,
+    hasDraft: activeStreamDraft !== null,
+    draftStepCount: Array.isArray(draftTimeline) ? draftTimeline.length : 0,
+    syncedEventCount: recoverySyncedEventCount,
+    turnDismissed: recoveryCardDismissedForTurn.value,
+    terminalApplied: recoveryCardTerminalApplied.value,
+    streaming: streamInFlight,
+    engaged: recoveryCardEngagedForTurn.value,
+    stageLabel: recoveryStageLabel(),
+  });
+  recoveryCardState.value = next;
+  if (next.phase === "syncing") recoveryCardEngagedForTurn.value = true;
+  if (next.phase === "done") {
+    // 完成态短暂停留：让用户知道「刚才是后台补上的」，之后自动收起。
+    if (recoveryCardDoneTimer === null) {
+      recoveryCardDoneTimer = setTimeout(() => {
+        recoveryCardDoneTimer = null;
+        recoveryCardTerminalApplied.value = false;
+        refreshRecoveryCard();
+      }, RECOVERY_CARD_DONE_VISIBLE_MS);
+    }
+    return;
+  }
+  clearRecoveryCardDoneTimer();
+};
+
+const dismissRecoveryCard = () => {
+  recoveryCardDismissedForTurn.value = true;
+  refreshRecoveryCard();
+};
+
+/** 新一轮提问 / 会话重置：复位本轮关闭标记与完成态，让提示重新可用。 */
+const resetRecoveryCard = () => {
+  clearRecoveryCardDoneTimer();
+  recoveryCardDismissedForTurn.value = false;
+  recoveryCardTerminalApplied.value = false;
+  recoveryCardEngagedForTurn.value = false;
+  recoveryGraceExpired.value = false;
+  recoveryUnknownCycles = 0;
+  refreshRecoveryCard();
+};
+
+/**
+ * 后台一轮结束（含切走页面再回来后的恢复收敛）时的统一收尾。
+ *
+ * 恢复路径此前只置了「终态已对齐」标记，没有走流结束那套收尾，于是思考卡片里那一步
+ * 仍是 pending：秒表继续走、文案停在「生成耗时较长，仍在继续…」，而此时恢复卡片已经
+ * 消失、输入框也已解锁——界面自相矛盾。秒表由「最后一条 pending 项」驱动，所以这里
+ * 必须把挂起项落定。
+ */
+const settleRecoveredTimeline = () => {
+  const msg = currentStreamAgentMessage();
+  if (msg) {
+    settlePendingTimelineSteps(msg.processTimeline);
+    if (Array.isArray(msg.logs)) {
+      msg.logs.forEach((log) => {
+        if (
+          log.status === "pending"
+          && log.category !== "permission"
+          && log.category !== "external"
+        ) {
+          log.status = "success";
+        }
+      });
+    }
+    msg.isThinking = false;
+    msg.processNarrationPending = false;
+  }
+  if (thoughtTimer) {
+    clearInterval(thoughtTimer);
+    thoughtTimer = null;
+  }
+  clearStallTimer();
+  showStalledPrompt.value = false;
+};
+
+/**
+ * 终态已写入界面后的统一收尾。
+ *
+ * 所有「本轮已收敛」的路径都必须走这里：落定挂起时间线、清掉在途草稿、清掉快照、
+ * 停掉事件续显并刷新恢复卡片。否则会出现「恢复卡片消失、秒表还在走、输入框仍锁」
+ * 这类互相矛盾的状态，或让下一次挂载把已经过期的草稿再还原出来。
+ */
+const finishRecoveredTurn = () => {
+  settleRecoveredTimeline();
+  activeStreamDraft = null;
+  recoveryGraceExpired.value = false;
+  recoveryUnknownCycles = 0;
+  // 本端仍在读流时不要提前解锁：可见性同步可能在流健康推进期间也跑到这里。
+  if (!streamInFlight && isProcessing.value) isProcessing.value = false;
+  recoveryCardTerminalApplied.value = true;
+  clearStreamReplayTimer();
+  clearStreamSnapshot(conversationId.value);
+  refreshRecoveryCard();
+};
+
+let recoveryDraftInFlight = false;
+
+/**
+ * 无草稿时补建恢复现场。
+ *
+ * 快照是「发送后最多 1.5s 才可能生成」的尽力而为兜底：首片正文/时间线到达之前刷新、
+ * 隐私模式禁用存储、或 reload 分支误清，都会让恢复器手里没有草稿。此时续显不会启动，
+ * 而 `/chat/history`（审计表）在落库前根本没有本轮——界面既看不到提问也看不到过程。
+ * 这里从 Redis 会话历史（ContextStep 已提前写入本轮 user）取回提问，补一条助手占位，
+ * 让事件续显有落点；终态到达后仍由 `planHistorySync` 覆盖。
+ */
+const ensureRecoveryDraft = async () => {
+  if (embedUnmounted || recoveryDraftInFlight || activeStreamDraft) return false;
+  const cid = conversationId.value;
+  if (!cid || !hasPermission.value) return false;
+  // 首屏/切会话历史尚未落地：此刻建草稿会被随后的历史整体替换掉。
+  if (isLoadingHistory.value) return false;
+  // 运行锁已确认释放：这一轮要么已落库（终态同步负责），要么已失败，不要伪造进行中。
+  if (!remoteRunActive.value) return false;
+  recoveryDraftInFlight = true;
+  try {
+    const response = await axios.get(
+      `/api/v1/chat/conversation/${encodeURIComponent(cid)}`,
+      { params: { limit: 3 }, headers: embedAuthHeaders() },
+    );
+    if (embedUnmounted || conversationId.value !== cid || activeStreamDraft) return false;
+    if (!remoteRunActive.value || !isApiSuccess(response.data)) return false;
+    const history = Array.isArray(response.data?.data?.messages)
+      ? (response.data.data.messages as Record<string, any>[])
+      : [];
+    const last = history.length ? history[history.length - 1] : null;
+    if (!last || last.role !== "user" || !String(last.content || "").trim()) return false;
+
+    const lastLocalUser = [...messages.value].reverse().find((message) => message.role === "user");
+    if (!lastLocalUser || String(lastLocalUser.content || "") !== String(last.content || "")) {
+      messages.value.push({
+        id: Date.now(),
+        role: "user",
+        content: String(last.content || ""),
+        files: Array.isArray(last.files) ? (last.files as ChatFile[]) : undefined,
+        logs: [],
+        isThinking: false,
+        feedback: null,
+        timestamp: last.timestamp,
+      });
+    }
+    // 用 ref 包一层与正常发送路径保持一致：activeStreamDraft 持有的是响应式对象，
+    // 续显写入才能驱动消息气泡更新。
+    const placeholder = ref<Message>({
+      id: Date.now() + 1,
+      role: "agent",
+      content: "",
+      isThinking: true,
+      thinkingText: "正在恢复输出…",
+      logs: [],
+      thoughtStartTime: Date.now(),
+      thoughtDuration: "0.0",
+      isThoughtExpanded: config.expandThoughts,
+      timestamp: new Date().toISOString(),
+    });
+    messages.value.push(placeholder.value);
+    activeStreamDraft = {
+      conversationId: cid,
+      msg: placeholder.value,
+      lastAppliedSeq: 0,
+    };
+    streamReplayCursor.value = { lastSeq: 0, traceId: "" };
+    streamReplayPrimed = false;
+    recoveryGraceExpired.value = false;
+    recoveryUnknownCycles = 0;
+    refreshRecoveryCard();
+    await nextTick();
+    scrollToBottom(true);
+    scheduleStreamReplay();
+    return true;
+  } catch (error) {
+    console.warn("[YltEmbedChat] 从会话历史补建恢复草稿失败", error);
+    return false;
+  } finally {
+    recoveryDraftInFlight = false;
+  }
+};
+
+watch([remoteRunActive, remoteRunBusy, isProcessing], refreshRecoveryCard);
+if (remoteRunActive.value) refreshRecoveryCard();
+
+/**
+ * 流刚结束时加速 run-status 收敛。
+ *
+ * 正常情况下 SSE 的 `run_status` 终态事件会把 `remoteRunActive` 立即翻回 false；但切
+ * 后台、代理缓冲或异常中断会让这一帧丢失，此后只能等 1.5s 轮询。这里在流结束后补做
+ * 一次带退避的核验，把「界面已输出完、快捷按钮却点不动」的窗口压到最小。
+ *
+ * 刻意不清零 `remoteRunActive`：流被中断时后台 producer 可能仍在运行，直接放开会与
+ * 服务端会话锁冲突。是否真的空闲，一律以后端 run-status 为准。
+ */
+let runStatusNudgeTimer: ReturnType<typeof setTimeout> | null = null;
+const nudgeRunStatusConvergence = async (attempt = 0) => {
+  if (runStatusNudgeTimer) {
+    clearTimeout(runStatusNudgeTimer);
+    runStatusNudgeTimer = null;
+  }
+  if (embedUnmounted || !conversationId.value) return;
+  // 必须 await：否则下面读到的还是请求发出前的旧值（仍是 true），会无条件多排一次
+  // 定时器，导致每轮正常结束的对话都白白多发一次 run-status 请求。
+  await refreshCurrentRunStatus();
+  if (embedUnmounted || !conversationId.value) return;
+  // 网络已返回，此时读到的才是真实状态；已空闲或重试次数用尽就不再打扰后端。
+  if (!shouldContinueRunStatusNudge(remoteRunActive.value, attempt)) return;
+  runStatusNudgeTimer = setTimeout(() => {
+    runStatusNudgeTimer = null;
+    void nudgeRunStatusConvergence(attempt + 1);
+  }, RUN_STATUS_NUDGE_INTERVAL_MS);
+};
+const clearRunStatusNudge = () => {
+  if (runStatusNudgeTimer) {
+    clearTimeout(runStatusNudgeTimer);
+    runStatusNudgeTimer = null;
+  }
+};
+
+const focusChatInputWhenReady = () => {
+  if (isMobile.value || isProcessing.value || remoteRunBusy.value || recoveryLocking.value || sendLocked.value) return;
+  nextTick(() => chatInputRef.value?.focus());
+};
+
+watch([isProcessing, remoteRunBusy, sendLocked], focusChatInputWhenReady);
+
+watch(conversationId, () => {
+  void refreshCurrentRunStatus();
+}, { immediate: true });
+
+const { contextUsage, refreshContextUsage } = useContextUsage();
+const {
+  sandboxWorkspaceStatus,
+  sandboxWorkspaceStatusLoaded,
+  sandboxWorkspaceError,
+  sandboxWorkspaceInstanceId,
+  sandboxWorkspaceStartedAt,
+  sandboxWorkspaceUptimeSeconds,
+  sandboxWarmHintVisible,
+  sandboxWarmHintTitle,
+  sandboxWarmHintSubtitle,
+  dismissSandboxWarmHint,
+  showSandboxWarmHint,
+  effectiveSandboxPolicy,
+  sandboxBackend,
+  isSandboxWorkspacePolicy,
+  showSandboxStopConfirm,
+  showDockerTerminal,
+  showK8sTerminal,
+  resetSandboxWorkspaceState,
+  refreshSandboxWorkspaceStatus,
+  sandboxWorkspaceRefreshing,
+  pollSandboxWorkspaceUntilRunning,
+  maybeAutoWarmSandbox,
+  ensureSandboxWorkspace,
+  openDockerTerminal,
+  handleStopSandboxWorkspaceRequest,
+  confirmStopSandboxWorkspace,
+  stopSandboxWorkspace,
+  restartSandboxWorkspace,
+} = useSandboxWorkspace({
+  conversationId,
+  contextUsage,
+  authHeaders: embedAuthHeaders,
+  isProcessing,
+  remoteRunActive,
+  preferToast: computed(() => windowWidth.value < 640),
+  showToast,
+});
+const {
+  contextCompactions,
+  contextCompactionCount,
+  contextCompactionsLoading,
+  contextCompactionsError,
+  contextCompactionActionLoading,
+  manuallyCompactContext,
+  refreshContextCompactions,
+} = useContextCompactions();
+const refreshEmbedContextUsage = () => refreshContextUsage({
+  conversationId: conversationId.value,
+  modelId: effectiveOverrideModel.value || undefined,
+  headers: embedAuthHeaders(),
+});
+const refreshEmbedContextCompactions = (force = false) => refreshContextCompactions({
+  conversationId: conversationId.value,
+  headers: embedAuthHeaders(),
+}, force);
+const manualCompactEmbedContext = async (retainRatio: 0.25 | 0.5 | 0.75 = 0.5, mode: "fast" | "smart" = "fast") => {
+  try {
+    const result = await manuallyCompactContext({ conversationId: conversationId.value, headers: embedAuthHeaders(), retainRatio, mode });
+    await refreshContextUsage({ conversationId: conversationId.value, modelId: effectiveOverrideModel.value || undefined, headers: embedAuthHeaders() });
+    showToast(result?.compacted ? `上下文已压缩，预计节省 ${Number(result.saved_percent || 0)}%` : "当前没有可压缩的历史内容", result?.compacted ? "success" : "info");
+  } catch {
+    showToast("上下文压缩失败，请稍后重试", "error");
+  }
+};
+
+watch(
+  [conversationId, () => effectiveOverrideModel.value, () => config.token],
+  () => void refreshEmbedContextUsage(),
+  { immediate: true },
+);
+
+watch(
+  [conversationId, () => effectiveOverrideModel.value, () => config.token],
+  () => void refreshEmbedContextCompactions(true),
+  { immediate: true },
+);
+
+/**
+ * 离开会话时的记忆收尾（fire-and-forget）。
+ *
+ * 历史侧栏是可以连点的：每点一次都会把「上一个会话」送去收尾，而后端的摘要合并要跑
+ * LLM + embedding（实测均值 20s+）。浏览器对同源只有 6 条连接，连点几次就能把它们
+ * 占满，最后一次切换的 GET /chat/history 只能排在队列里，界面一直停在
+ * 「正在加载历史记录...」。这里做两件事：
+ *
+ * 1. 合并连点：600ms 内的连续切换互相覆盖，只对「真正离开」的那个会话收尾一次；
+ * 2. 又切回来就不收尾：定时触发时目标仍是当前会话就直接丢弃（用户只是扫了一眼）。
+ *
+ * 后端已改为立即返回、后台合并摘要，所以合并后发一次即可，不需要等待结果。
+ */
+let pendingFinalizeConversationId = "";
+let finalizeConversationTimer: ReturnType<typeof setTimeout> | null = null;
+
+const cancelPendingConversationFinalize = () => {
+  if (finalizeConversationTimer) {
+    clearTimeout(finalizeConversationTimer);
+    finalizeConversationTimer = null;
+  }
+  pendingFinalizeConversationId = "";
+};
+
+const finalizeConversationInBackground = (cid: string) => {
+  const normalized = String(cid || "").trim();
+  if (!normalized) return;
+  pendingFinalizeConversationId = normalized;
+  if (finalizeConversationTimer) clearTimeout(finalizeConversationTimer);
+  finalizeConversationTimer = setTimeout(() => {
+    finalizeConversationTimer = null;
+    const target = pendingFinalizeConversationId;
+    pendingFinalizeConversationId = "";
+    // 又切回该会话（或它就是当前会话）：没有真正离开，不需要收尾。
+    if (!target || target === conversationId.value) return;
+    void finalizeConversation(target, embedAuthHeaders());
+  }, 600);
+};
+
+const updateActiveConversationOnServer = async (cid: string) => {
+  if (!config.token) return;
+  if (!shouldUseServerActiveConversation()) return;
+  try {
+    await axios.post("/api/v1/chat/active", {
+      conversation_id: cid
+    }, {
+      params: activeConversationRequestParams(),
+      headers: embedAuthHeaders()
+    });
+  } catch (e: any) {
+    console.warn("[ActiveConv] Failed to update active conversation on server:", e);
+  }
+};
+
+watch(conversationId, () => {
+  void loadResourceScope();
+});
+
+/**
+ * 采用某个会话 ID 之前先确认它不是别人的。三种结果：
+ *
+ * - `adoptable`：可以安全采用（含「全新会话」与「确实属于自己」）；
+ * - `foreign`：已属于他人 —— 必须丢弃，并清掉本地记录；
+ * - `unknown`：校验没能得出结论（网络/服务异常）—— 同样**不采用**，但**不清**本地记录，
+ *   否则一次网络抖动就会永久删掉用户自己的续接记录（会话仍在历史列表里，可手动找回）。
+ *
+ * 会话 ID 是纯字符串，来源有三处都不可信：宿主下发的 `conversation_id`、localStorage
+ * 里的残留、服务端按用户存的活跃会话（历史遗留写入）。身份换了它们都不会变，所以要
+ * 逐个问服务端「这个会话是不是已经属于别人了」。
+ */
+const checkConversationAdoption = async (
+  cid: string,
+  signal?: AbortSignal,
+): Promise<'adoptable' | 'foreign' | 'unknown'> => {
+  const normalized = String(cid || "").trim();
+  if (!normalized) return 'unknown';
+  // 接口抖动不该被当成「别人的会话」（unknown 会保留指针，但也不会采用），重试一次再下结论。
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (signal?.aborted) return 'unknown';
+    try {
+      const res = await axios.get(
+        `/api/v1/chat/conversation/${encodeURIComponent(normalized)}/ownership`,
+        {
+          params: activeConversationRequestParams(),
+          headers: embedAuthHeaders(),
+          signal,
+        },
+      );
+      // 聊天面是 StandardResponse（`code: 200`），**没有** `status` 字段；按遗留门户信封
+      // 判定会永远为假，会话采用会一路退化成「判不出来」（历史点不开、刷新像新会话）。
+      if (!isApiSuccess(res.data)) continue;
+      // 判定依据是后端给出的两个**相互独立的事实**：`foreign` = 这个 cid 里有别人的轮次，
+      // `owned` = 这个 cid 里有我自己的轮次/记忆。只有「有别人的、且没有我的」才是真正
+      // 别人的会话；「混杂」必须放行——历史数据里「一个 cid、多个归属人」很常见（打补丁前
+      // 会话 ID 与登录身份无关，宿主下发的 resume id 也可能被同租户多人共用），而读侧本来
+      // 就按用户过滤，拦下来只会让用户打不开自己参与过的历史、刷新后续接也断掉。
+      const data = res.data?.data || {};
+      const owned = data.owned === true;
+      const foreign = data.foreign === true;
+      if (foreign && !owned) {
+        console.warn("[Session] Discarded a conversation id that belongs to another user.");
+        return 'foreign';
+      }
+      if (foreign && owned) {
+        console.warn("[Session] Conversation also holds other users' turns; showing only my own view.");
+      }
+      return 'adoptable';
+    } catch (e: any) {
+      if (signal?.aborted) return 'unknown';
+      console.warn("[Session] Conversation ownership check failed; not adopting it:", e?.message || e);
+    }
+  }
+  return 'unknown';
+};
+
+/** 仅用于「能否采用」的布尔判断（不采用即返回 false）。 */
+const isConversationAdoptable = async (cid: string): Promise<boolean> =>
+  (await checkConversationAdoption(cid)) === 'adoptable';
+
+/** 宿主下发的欢迎语覆盖文案：换身份时用于恢复「宿主口径」，而不是恢复上一位用户的姓名。 */
+let welcomeMessageFromHost = "";
+
+/**
+ * 身份切换时丢弃上一位用户的会话现场。
+ *
+ * 存储键已按身份分桶，但内存里的消息、会话 ID、分页游标、资源范围与流式草稿不会自己
+ * 消失；只清存储的话，界面上仍然是上一位用户的对话，而新提问已经写到新身份名下——
+ * 这正是「切换用户后加载到其他用户会话」的最后一环。
+ */
+
+/**
+ * 复位所有「会话级」运行时状态（切会话 / 新建会话 / 丢弃会话视图 / 换身份的唯一入口）。
+ *
+ * 下面这些状态都是模块级单例，语义上却属于「当前会话」：此前它们散落在各条重置路径里手工
+ * 清理，漏一项就是一个跨会话缺陷——事件写进孤儿草稿、输入框永久锁死、卡片显示别的会话的
+ * 进度，这些都已实际发生过。因此收敛成唯一入口，并由
+ * `test_conversation_scoped_state_registry_contract.py` 扫描 `@conversation-scoped`
+ * 标记强制登记：以后新增会话级状态忘了登记，测试会直接失败。
+ *
+ * 只负责运行时状态：`messages`、历史分页、身份与界面现场由各调用点自行处理。
+ * 用 `resetRunStatus` 而非 `markOutputCompleted`：后者会把「本轮输出已完成」的标记留在
+ * 新会话上，导致切页面回来时仍在跑的那一轮再也锁不住输入框。
+ */
+const resetConversationScopedState = () => {
+  // 先停本地在途读数：服务端 producer 不受影响，切回时靠续显补齐。不 abort 的话，全局单例
+  // abortController 会在别的会话里被「停止」按钮误用，abort 掉上一个会话的流。
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+  streamInFlight = false;
+  isProcessing.value = false;
+  if (thoughtTimer) {
+    clearInterval(thoughtTimer);
+    thoughtTimer = null;
+  }
+  // 顺序要紧：resetStallTimer 在 isProcessing 仍为 true 时会重新起一个「生成耗时较长」的
+  // 定时器，必须排在复位锁态之后。
+  resetStallTimer();
+  clearStalePendingTimer();
+  // 待补发的快速指令属于上一个会话（flushPendingQuickSend 另有 conversationId 兜底丢弃，
+  // 这里只是不留残留、也不留下一次无效的运行态核验）。
+  dropPendingQuickSend();
+  clearRunStatusNudge();
+  // 运行态轮询与锁态：目标会话若真在跑，watch(conversationId) 会重新核验并重新提供锁。
+  stopRemoteRunPolling();
+  resetRunStatus();
+  // 续显三元组 + 已补回条数：草稿、游标、首次对齐标志都是会话局部的（后端每轮清空事件日志、
+  // seq 从 1 重新计数，沿用旧游标会把目标会话的事件全挡在 after_seq 之内）。
+  activeStreamDraft = null;
+  streamReplayCursor.value = { lastSeq: 0, traceId: "" };
+  clearStreamReplayTimer();
+  streamReplayPrimed = false;
+  recoverySyncedEventCount = 0;
+  // 恢复卡片（含本轮关闭标记与完成态定时器）属于本轮。
+  resetRecoveryCard();
+};
+
+const resetSessionForIdentityChange = (
+  nextIdentityKey: string,
+  options?: { preserveRequestedConversationId?: boolean },
+) => {
+  const previousId = conversationId.value;
+  // 刻意**不动**上一位用户的会话：既不用新身份去 finalize 它（那是别人的会话，新身份也
+  // 读不到它的 Redis 历史，只会白跑一次请求），也不去删它的草稿快照（快照键含身份维度，
+  // 新身份读不到；反过来按新身份算键去删，删的是新身份自己的）。
+  if (previousId) {
+    console.log("[Session] Dropped the previous identity's conversation view:", previousId);
+  }
+  // 会话级运行时状态一次性复位（停流、续显三元组、恢复卡片、运行态轮询与锁态）；
+  // 上一位用户的回调再也不会往下面刚清空的 messages 里追加内容。
+  resetConversationScopedState();
+  messages.value = [];
+  conversationId.value = "";
+  // 新身份没有「已恢复会话专家」这回事：不重置会让新用户的账号默认永不生效。
+  conversationRoutingRestored.value = false;
+  if (!options?.preserveRequestedConversationId) requestedConversationId = "";
+  resourceScope.value = emptyResourceScopeState();
+  Object.assign(resourceScopeDraft, { project_name: '', datasets: '', knowledge_bases: '', skills: '', mcp_tools: '' });
+  resourceScopeLoadSequence += 1;
+  // 上一位用户待提交的会话收尾必须撤掉：既不能用新身份去 finalize 别人的会话，
+  // 也不能让换人的动作顺带触发一次后端摘要合并。
+  cancelPendingConversationFinalize();
+  historyRequestSequence += 1;
+  historyAbortController?.abort();
+  historyAbortController = null;
+  historyAdoptionAbortController?.abort();
+  historyAdoptionAbortController = null;
+  historyLoadingConversationId = "";
+  historyOffset.value = 0;
+  hasMoreHistory.value = true;
+  isLoadingHistory.value = false;
+  sandboxDegradedMessage.value = "";
+
+  // —— 界面现场：会话数据清了不等于界面清了 ——
+  // 历史侧栏列表是上一位用户拉取的（列表项里就有对方的提问原文与摘要），必须清空；
+  // 否则换人后侧栏仍显示对方会话，点进去还会采用一个不属于自己的会话 ID。
+  historyList.value = [];
+  historyPage.value = 1;
+  historyHasMore.value = true;
+  loadingHistory.value = false;
+  loadingMoreHistory.value = false;
+  historyKeyword.value = "";
+  historyFilters.value = { ...DEFAULT_HISTORY_FILTERS };
+  // 置顶同样是上一位用户的账号级偏好：先清空，等 initChat 拿到新身份后再加载。
+  pinnedConversations.value = [];
+  // 侧栏开关只存本机，但仍然按身份隔离：换人后允许重新从本机缓存恢复一次。
+  historySidebarRestored = false;
+  // 浏览器面板/网页预览：面板靠 session-id + viewer-token 保持实时画面（服务端 token 是
+  // 会话级凭证、不绑用户），换人后既会继续显示对方画面，还能把输入转发过去。必须断开。
+  browserOpenGeneration += 1;
+  browserPanelVisible.value = false;
+  browserPanelOpening.value = false;
+  browserSessionId.value = null;
+  browserViewerToken.value = null;
+  browserEnvironmentError.value = null;
+  webPreviewVisible.value = false;
+  webPreviewUrl.value = null;
+  // 输入区：草稿文字、已上传附件（含图片）、数据集挂载都是上一位用户的内容。
+  userInput.value = "";
+  clearActiveMetadataDatasets(chatInputRef.value);
+  if (chatInputRef.value) chatInputRef.value.uploadedFiles = [];
+  // 回溯/统计弹窗的内存内容：弹窗恰好开着时显示的仍是对方的执行链与统计。
+  traceLogData.value = null;
+  activeHistoryItem.value = null;
+  conversationTurns.value = [];
+  expandedTraceSteps.value = {};
+  currentStats.value = [];
+  expandedStats.value = {};
+  // 智能体列表与路由偏好按身份从服务端取：置为未拉取，让新身份的初始化真正重新拉一次
+  // （纯 Cookie 身份切换不会触发 token watcher 的强制刷新）。
+  hasFetchedAgents.value = false;
+  // 宿主业务上下文（页面信息等）随身份一起作废：新用户初始化时会重新下发。
+  injectedContext.value = {};
+  // 欢迎语里含上一位用户的姓名，必须重算；宿主下发过覆盖文案则沿用宿主的。
+  config.welcomeMessage = welcomeMessageFromHost;
+  resetEmbedThinkingOverrides();
+  activeIdentityKey = nextIdentityKey;
+};
+
+const generateNewConversation = (options: { persist?: boolean } = {}) => {
+  const previousId = conversationId.value;
+  if (previousId) {
+    finalizeConversationInBackground(previousId);
+  }
+  // 工作台等入口通过 INIT_CONFIG 写入的 resume id，新会话时必须清掉，
+  // 否则随后 initChat() 会再次强制切回旧会话并重载历史。
+  requestedConversationId = "";
+  resetEmbedThinkingOverrides();
+  resourceScopeLoadSequence += 1;
+  conversationId.value = createConversationId();
+  resourceScope.value = emptyResourceScopeState();
+  Object.assign(resourceScopeDraft, { project_name: '', datasets: '', knowledge_bases: '', skills: '', mcp_tools: '' });
+  // `persist: false` 用于「归属暂时判不出来」的场景：只换内存里的会话，绝不覆盖本地指针
+  // 与服务端活跃指针，用户下次打开还能接回自己的会话（否则一次接口抖动就等于抹掉续接记录）。
+  if (options.persist !== false) {
+    persistConversationId(conversationId.value);
+    updateActiveConversationOnServer(conversationId.value);
+    // 新会话从第一天起就有自己的专家记录：用账号默认，而不是上一个会话恢复出来的专家。
+    const accountRouting = savedRoutingPreference.value;
+    const accountMode: RoutingMode =
+      accountRouting.routing_mode === "expert" && accountRouting.expert_agent_id
+        ? "expert"
+        : "auto";
+    void saveConversationRouting(
+      conversationId.value,
+      accountMode,
+      accountMode === "expert" ? accountRouting.expert_agent_id : "",
+    );
+  }
+  loadResourceScope();
+};
+
+// Mention State (Moved to ChatInput)
+// const showMentionList = ref(false); // Removed
+// const mentionKeyword = ref(""); // Removed
+// const mentionPosition = reactive({ top: 0, left: 0 }); // Removed
+type RoutingMode = "auto" | "expert";
+type RoutingPreference = {
+  routing_mode: RoutingMode;
+  expert_agent_id: string;
+  routing_configured: boolean;
+};
+const savedRoutingPreference = ref<RoutingPreference>({
+  routing_mode: "auto",
+  expert_agent_id: "",
+  routing_configured: false,
+});
+
+const fetchUserPortalPreferences = async () => {
+    // 侧栏开关只存本机：与账号偏好无关，也不受这个请求成败影响，初始化时读一次即可。
+    if (!historySidebarRestored) {
+        historySidebarRestored = true;
+        restoreHistorySidebarPreference();
+    }
+    try {
+        const res = await axios.get("/api/portal/portal-prefs");
+        const prefs = res.data?.data || {};
+        if (prefs.markdown_theme) {
+            config.markdownTheme = prefs.markdown_theme;
+            localStorage.setItem("user_has_custom_theme", "true");
+        } else {
+            localStorage.removeItem("user_has_custom_theme");
+        }
+        if (prefs.agent_avatar) {
+            config.agentAvatar = prefs.agent_avatar;
+        } else {
+            config.agentAvatar = "";
+        }
+        localStorage.removeItem("yovole_embed_agent_avatar");
+        const routingMode: RoutingMode = prefs.routing_mode === "expert" ? "expert" : "auto";
+        savedRoutingPreference.value = {
+        routing_mode: routingMode,
+        expert_agent_id: String(prefs.expert_agent_id || "").trim(),
+        routing_configured: prefs.routing_configured === true,
+      };
+    } catch (error) {
+        console.warn("Failed to fetch user portal preferences from Redis", error);
+        savedRoutingPreference.value = {
+          routing_mode: "auto",
+          expert_agent_id: "",
+          routing_configured: false,
+        };
+    }
+};
+
+const hasCustomMessageBorderPreference = () =>
+    localStorage.getItem("user_has_custom_border_preference") === "true";
+
+const allowedAgents = ref<any[]>([]);
+// 智能体头像索引：吐出的候选只有「配了头像的智能体」，查不到就回落全局官方形象。
+const agentAvatarIndex = computed(() => buildAgentAvatarIndex(allowedAgents.value));
+/**
+ * 气泡头像三层继承：消息自带头像（历史接口下发）→ 智能体索引 → 全局官方形象。
+ * 空串由模板侧兜底为内置默认资源。
+ */
+const msgAvatarSrc = (msg: Message): string =>
+  resolveChatAgentAvatar(
+    { agentName: msg.agentName, agentAvatarUrl: msg.agentAvatarUrl },
+    agentAvatarIndex.value,
+    config.agentAvatar,
+  );
+const isGeneralAgentMessage = (msg: Message): boolean => {
+  if (msg.agentType) return msg.agentType === "GENERAL";
+  const agent = allowedAgents.value.find(
+    (item: any) => item.name === msg.agentName || item.id === msg.agentName,
+  );
+  return agent?.agent_type === "GENERAL";
+};
+const hasFetchedAgents = ref(false);
+const isLoadingAgents = ref(false);
+const fetchAllowedAgents = async (force = false) => {
+    if (hasFetchedAgents.value && !force) return;
+    isLoadingAgents.value = true;
+    try {
+        // 先获取用户在后端 Redis 持久化的排版与路由偏好
+        await fetchUserPortalPreferences();
+
+        const res = await axios.get("/api/portal/agents/allowed");
+        if (res.data) {
+            allowedAgents.value = res.data; // Already filtered by backend
+            hasFetchedAgents.value = true;
+
+            // 集成锁定优先于用户 Redis 偏好；普通 Embed 只应用当前用户有权限的默认智能体。
+            if (!isRoutingSettingsLocked.value) {
+                if (conversationRoutingRestored.value) {
+                    // 已按该会话自己的记录恢复过专家：账号默认只能兜底，不能反过来覆盖。
+                    if (config.routingMode === "expert" && config.expertAgentId) {
+                        // 该专家可能随后被停用/收权：列表就绪时校正一次，
+                        // 否则标题会显示一串裸 ID。
+                        const usable = res.data.some(
+                            (agent: any) => String(agent.id) === config.expertAgentId,
+                        );
+                        if (!usable) {
+                            config.routingMode = "auto";
+                            config.expertAgentId = "";
+                        }
+                    }
+                } else {
+                    const saved = savedRoutingPreference.value;
+                    const savedAgentAllowed = saved.expert_agent_id
+                        && res.data.some((agent: any) => String(agent.id) === saved.expert_agent_id);
+                    if (saved.routing_configured && saved.routing_mode === "expert" && savedAgentAllowed) {
+                        config.routingMode = "expert";
+                        config.expertAgentId = saved.expert_agent_id;
+                    } else {
+                        config.routingMode = "auto";
+                        config.expertAgentId = "";
+                    }
+                }
+            }
+            
+            // 自动应用当前激活智能体推荐的排版风格
+            if (config.expertAgentId) {
+                const currentAgent = res.data.find((a: any) => a.id === config.expertAgentId);
+                const hasCustomTheme = localStorage.getItem("user_has_custom_theme") === "true";
+                if (!hasCustomTheme) {
+                    const recommendedTheme = currentAgent?.engine_config?.default_markdown_theme;
+                    if (recommendedTheme) {
+                        config.markdownTheme = recommendedTheme;
+                    }
+                }
+                if (!hasCustomMessageBorderPreference()) {
+                    config.hideMessageBorder = currentAgent?.engine_config?.hide_message_border ?? true;
+                }
+            }
+            
+            console.log(`[LifeCycle] Successfully fetched ${res.data.length} allowed agents.`);
+            void prefetchPortalNavigationIfEligible();
+        }
+    } catch (e) {
+        console.warn("Mention feature disabled: Cannot fetch allowed agents", e);
+        hasFetchedAgents.value = false;
+    } finally {
+        isLoadingAgents.value = false;
+    }
+};
+
+// Auto-fetch agents and commands when token becomes available
+watch(() => config.token, (newToken) => {
+    if (newToken) {
+        console.log("[LifeCycle] Token detected/changed, re-fetching context...");
+        fetchAllowedAgents(true);
+        fetchSlashCommands();
+        // 刷新后专家选择会先从本地恢复，此时需要在 token 到位后再读取其欢迎卡片。
+        void loadWelcomeCards(effectiveEmbedChatAgentId.value);
+        void loadWorkbenchHome();
+    }
+}, { immediate: true });
+
+// 非 URL 深链的专家切换也需要同步刷新版本级欢迎卡片。
+watch(effectiveEmbedChatAgentId, (agentId) => {
+    if (config.token) {
+        void loadWelcomeCards(agentId);
+    }
+}, { immediate: true });
+
+// 监听当前激活的智能体变更，自动应用其配置的推荐排版风格
+watch(() => config.expertAgentId, (newAgentId) => {
+    if (newAgentId && allowedAgents.value.length > 0) {
+        const currentAgent = allowedAgents.value.find(a => a.id === newAgentId);
+        const hasCustomTheme = localStorage.getItem("user_has_custom_theme") === "true";
+        if (!hasCustomTheme) {
+            const recommendedTheme = currentAgent?.engine_config?.default_markdown_theme;
+            if (recommendedTheme) {
+                config.markdownTheme = recommendedTheme;
+            } else {
+                config.markdownTheme = "default";
+            }
+        }
+        if (!hasCustomMessageBorderPreference()) {
+            config.hideMessageBorder = currentAgent?.engine_config?.hide_message_border ?? true;
+        }
+    }
+}, { immediate: true });
+
+const handleSwitchMode = (agent: any) => {
+    if (isRoutingSettingsLocked.value) {
+      showToast("当前链接已锁定指定智能体，无法切换其他专家", "warning");
+      return;
+    }
+    config.overrideAgentId = "";
+    switchToExpert(agent.id);
+};
+
+const listDataQueryAgents = () => {
+    return allowedAgents.value.filter((agent: any) => {
+        const capabilities = Array.isArray(agent?.capabilities) ? agent.capabilities : [];
+        if (capabilities.includes("data_query")) return true;
+        const label = `${agent?.name || ""} ${agent?.display_name || ""} ${agent?.description || ""}`;
+        return /数据查询|ChatBI|DataQuery/i.test(label);
+    });
+};
+
+/** 仅当恰好 1 个查数智能体时返回，多个则不自动锁定 */
+const findUniqueDataQueryAgent = () => {
+    const matches = listDataQueryAgents();
+    return matches.length === 1 ? matches[0] : undefined;
+};
+
+const hasDataQueryAgent = () => listDataQueryAgents().length > 0;
+
+/** ChatBI「继续分析」等追问：本轮强制走查数智能体，避免自动路由到主助手 */
+const forceDataQueryAgentOnce = ref(false);
+const resolvePreferredDataQueryAgentId = () => {
+  const unique = findUniqueDataQueryAgent();
+  if (unique?.id) return String(unique.id);
+  const first = listDataQueryAgents()[0];
+  return first?.id ? String(first.id) : "";
+};
+const armDataQueryAgentForFollowup = () => {
+  if (isRoutingSettingsLocked.value) return false;
+  const agentId = resolvePreferredDataQueryAgentId();
+  if (!agentId) {
+    showToast("未找到可用的数据查询智能体，无法继续可视化分析", "warning");
+    return false;
+  }
+  forceDataQueryAgentOnce.value = true;
+  return true;
+};
+const handleChatBIContinueSelect = (query: string) => {
+  if (!armDataQueryAgentForFollowup()) return;
+  void handleQuickQuestion(query);
+};
+
+const handleReorderCommands = async (reorderData: any[]) => {
+    try {
+        await axios.post("/api/portal/slash-commands/reorder", { items: reorderData });
+        await fetchSlashCommands();
+    } catch (e) {
+        console.error("Failed to reorder commands", e);
+    }
+};
+// Context
+const injectedContext = ref<Record<string, any>>({});
+const BUSINESS_CONTEXT_RESERVED_KEYS = new Set([
+  "user_id",
+  "user_name",
+  "username",
+  "real_name",
+  "user_role",
+  "role",
+  "role_name",
+  "is_admin",
+  "account_id",
+  "department",
+  "dept_name",
+  "dept_code",
+  "org_path",
+  "user_dimensions",
+  "user_info",
+  "user",
+  "current_user",
+  "authenticated_user",
+  "auth_user",
+  "permissions",
+  "permission",
+  "permission_ids",
+  "tenant_id",
+  "tenant",
+  "tenant_name",
+  "org_id",
+  "organization_id",
+  "organization",
+  "is_superuser",
+  "is_staff",
+  "auth_id",
+  "auth_user_id",
+  "api_key",
+  "token",
+  "access_token",
+  "authorization",
+]);
+const BUSINESS_CONTEXT_RUNTIME_KEYS = new Set(["device_type", "display_hint"]);
+const isContextRecord = (value: unknown): value is Record<string, any> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const sanitizeBusinessValue = (value: any): any => {
+  if (Array.isArray(value)) return value.map(sanitizeBusinessValue);
+  if (!isContextRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !BUSINESS_CONTEXT_RESERVED_KEYS.has(key.trim().toLowerCase()))
+      .map(([key, item]) => [key, sanitizeBusinessValue(item)]),
+  );
+};
+const mergeBusinessContext = (rawContext: unknown) => {
+  if (!isContextRecord(rawContext)) return;
+  const nestedContext = isContextRecord(rawContext.business_context)
+    ? rawContext.business_context
+    : {};
+  const directContext = Object.fromEntries(
+    Object.entries(rawContext).filter(
+      ([key]) => key !== "business_context" && !BUSINESS_CONTEXT_RUNTIME_KEYS.has(key),
+    ),
+  );
+  const nextBusinessContext = {
+    ...(isContextRecord(injectedContext.value.business_context)
+      ? injectedContext.value.business_context
+      : {}),
+    ...nestedContext,
+    ...directContext,
+  };
+  const sanitizedBusinessContext = sanitizeBusinessValue(nextBusinessContext);
+  const nextContext = Object.fromEntries(
+    Object.entries(injectedContext.value).filter(
+      ([key]) => key !== "business_context" && !BUSINESS_CONTEXT_RESERVED_KEYS.has(key),
+    ),
+  );
+  for (const key of BUSINESS_CONTEXT_RUNTIME_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(rawContext, key)) {
+      nextContext[key] = rawContext[key];
+    }
+  }
+  nextContext.business_context = sanitizedBusinessContext;
+  injectedContext.value = nextContext;
+};
+// Network
+const connectionStatus = ref<"connected" | "disconnected" | "reconnecting">(
+  "connected"
+);
+// @conversation-scoped: abortController
+let abortController: AbortController | null = null;
+// @conversation-scoped: thoughtTimer
+let thoughtTimer: any = null;
+// @conversation-scoped: stallTimer
+let stallTimer: any = null;
+// @conversation-scoped: stalePendingTimer
+let stalePendingTimer: ReturnType<typeof setInterval> | null = null;
+// @conversation-scoped: showStalledPrompt
+const showStalledPrompt = ref(false);
+const clearStalePendingTimer = () => {
+  if (stalePendingTimer) {
+    clearInterval(stalePendingTimer);
+    stalePendingTimer = null;
+  }
+};
+const startStalePendingTimer = (msg: Message) => {
+  clearStalePendingTimer();
+  stalePendingTimer = setInterval(() => {
+    if (!isProcessing.value) {
+      clearStalePendingTimer();
+      return;
+    }
+    if (markStalePendingStreamLogs(msg)) {
+      msg.isThinking = false;
+    }
+  }, 10_000);
+};
+const startThoughtTimer = (msg: Message) => {
+  if (thoughtTimer) clearInterval(thoughtTimer);
+  msg.thoughtStartTime = Date.now();
+  msg.thoughtDuration = "0.0";
+  let ticks = 0;
+  const THINKING_MESSAGES = [
+    "正在连接服务…",
+    "正在分析任务…",
+    "正在组织回答…",
+  ];
+  msg.thinkingText = THINKING_MESSAGES[0];
+  thoughtTimer = setInterval(() => {
+    ticks++;
+    if (msg.thoughtStartTime) {
+      msg.thoughtDuration = (
+        (Date.now() - msg.thoughtStartTime) /
+        1000
+      ).toFixed(1);
+      triggerRef(messages);
+    }
+    // Switch message every 3 seconds (30 * 100ms)
+    if (ticks % 30 === 0) {
+      const activePendingLog = msg.logs ? [...msg.logs].reverse().find((l) => l.status === "pending" && l.title) : null;
+      if (activePendingLog && activePendingLog.title) {
+        const titleStr = activePendingLog.title.startsWith("正在") ? activePendingLog.title : `正在${activePendingLog.title}`;
+        msg.thinkingText = `${titleStr}…`;
+      } else {
+        const stepIndex = ticks / 30;
+        if (stepIndex < THINKING_MESSAGES.length) {
+          msg.thinkingText = THINKING_MESSAGES[stepIndex];
+        } else {
+          msg.thinkingText = "任务处理中，请稍候…";
+        }
+      }
+      triggerRef(messages);
+    }
+  }, 100);
+};
+const finishThoughtTimer = (msg: Message) => {
+  if (msg.thoughtStartTime) {
+    msg.thoughtDuration = ((Date.now() - msg.thoughtStartTime) / 1000).toFixed(1);
+    triggerRef(messages);
+  }
+  if (thoughtTimer) clearInterval(thoughtTimer);
+  thoughtTimer = null;
+};
+const clearStallTimer = () => {
+  if (stallTimer) {
+    clearTimeout(stallTimer);
+    stallTimer = null;
+  }
+};
+const resetStallTimer = () => {
+  clearStallTimer();
+  showStalledPrompt.value = false;
+  if (isProcessing.value) {
+    stallTimer = setTimeout(() => {
+      showStalledPrompt.value = true;
+      nextTick(() => {
+        scrollToBottom();
+      });
+    }, 2000);
+  }
+};
+// Slash Commands
+const SYSTEM_SLASH_COMMANDS = [
+  { id: "sys_clear", command: "/new", label: "新会话", sort_order: -40 },
+  { id: "sys_project", command: "/project", label: "新建项目会话", sort_order: -39.5 },
+  { id: "sys_history", command: "/history", label: "历史", sort_order: -39 },
+  { id: DATASET_PORTAL_SYSTEM_COMMAND_ID, command: DATASET_PORTAL_SLASH_COMMAND, label: "数据门户", sort_order: -35 },
+  { id: KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID, command: KNOWLEDGE_PORTAL_SLASH_COMMAND, label: "知识库中心", sort_order: -34.5 },
+  { id: WORKSPACE_SYSTEM_COMMAND_ID, command: WORKSPACE_SLASH_COMMAND, label: "工作空间", sort_order: -34 },
+  { id: MY_ARTIFACTS_SYSTEM_COMMAND_ID, command: MY_ARTIFACTS_SLASH_COMMAND, label: "我的产出", sort_order: -33.5 },
+  { id: "sys_quota", command: "/quota", label: "我的额度", sort_order: -18 },
+  { id: "sys_compact", command: "/compact", label: "压缩上下文", sort_order: -17 },
+  { id: "sys_settings", command: "/settings", label: "设置", sort_order: -15 },
+];
+const showCommandMenu = ref(false);
+const isKnowledgeEnabled = ref(true);
+const slashCommands = ref<any[]>([...SYSTEM_SLASH_COMMANDS]);
+// History Sidebar State
+const HISTORY_SIDEBAR_OPEN_KEY = "embed_history_sidebar_open";
+const showHistorySidebar = ref(false);
+// 只从本机缓存恢复一次：避免切换智能体等后台刷新把用户刚关掉的侧栏又重新打开。
+let historySidebarRestored = false;
+
+/** 桌面端才恢复/保存侧栏开关；窄屏下它是带遮罩的浮层，刷新后自动弹开会挡住内容。 */
+const isHistorySidebarDesktop = () =>
+  typeof window !== "undefined" &&
+  !window.matchMedia("(max-width: 639px)").matches;
+
+const restoreHistorySidebarPreference = () => {
+  if (!isHistorySidebarDesktop()) return;
+  try {
+    showHistorySidebar.value = localStorage.getItem(HISTORY_SIDEBAR_OPEN_KEY) === "1";
+  } catch {
+    // localStorage 不可用（隐私模式/跨域限制）时保持默认关闭
+  }
+};
+
+const historyList = ref<any[]>([]);
+const historyPage = ref(1);
+const historyHasMore = ref(true);
+const loadingHistory = ref(false);
+const loadingMoreHistory = ref(false);
+const historyKeyword = ref("");
+
+// --- History Filters ---
+const historyFilters = ref<ChatHistoryFilters>({ ...DEFAULT_HISTORY_FILTERS });
+
+const resetHistoryFilters = () => {
+  historyFilters.value = { ...DEFAULT_HISTORY_FILTERS };
+};
+
+// 集成锁定场景下历史已被限定为单一智能体，智能体筛选无意义
+const showAgentFilter = computed(() => !config.agentId);
+
+const historyAgentOptions = computed(() =>
+  (allowedAgents.value || []).map((agent: any) => ({
+    id: String(agent.id),
+    display_name: agent.display_name || agent.name || "未命名智能体",
+    avatar_url: agent.avatar_url || "",
+  }))
+);
+
+watch(
+  historyFilters,
+  () => {
+    fetchHistory();
+  },
+  { deep: true }
+);
+
+// --- Aggregated History Logic ---
+const aggregatedHistoryList = computed(() => {
+  if (!historyList.value.length) return [];
+
+  const groups: Record<string, any> = {};
+  const orderedKeys: string[] = [];
+
+  historyList.value.forEach(item => {
+    // 从根源上直接拦截并忽略没有 conversation_id 的旧垃圾测试脏数据，防止显示僵尸条目
+    if (!item.conversation_id) return;
+
+    const cid = item.conversation_id;
+    if (!groups[cid]) {
+      groups[cid] = item;
+      orderedKeys.push(cid);
+    }
+  });
+
+  return orderedKeys.map(key => groups[key]);
+});
+
+/** 会话置顶（账号级偏好）：加载失败只降级，不影响聊天。 */
+const {
+  pinned: pinnedConversations,
+  load: loadPinnedConversations,
+  toggle: togglePinnedConversation,
+  removeMany: removePinnedConversations,
+} = usePinnedConversations({ headers: embedAuthHeaders });
+
+const handleTogglePin = async (item: any) => {
+  const result = await togglePinnedConversation(item);
+  if (!result.ok) {
+    showToast(result.message || "置顶失败，请稍后重试", "warning");
+    return;
+  }
+  showToast(result.pinned ? "已置顶该会话" : "已取消置顶", "success");
+};
+
+const groupedHistoryList = computed(() => {
+  const { pinnedGroup, dateGroups } = splitHistoryByPin(
+    aggregatedHistoryList.value,
+    pinnedConversations.value,
+    {
+      // 搜索/筛选时不允许快照项凭空出现（会让人以为它命中了关键词）
+      includeMissingPins:
+        !historyKeyword.value.trim() && isDefaultHistoryFilters(historyFilters.value),
+    },
+  );
+  return pinnedGroup ? [pinnedGroup, ...dateGroups] : dateGroups;
+});
+
+const copiedId = ref("");
+const copyToClipboard = async (text: string, id?: string) => {
+  if (!text) return;
+  const ok = await copyTextSecure(text);
+  if (!ok) {
+    console.error('Failed to copy');
+    return;
+  }
+  if (id) {
+    copiedId.value = id;
+    setTimeout(() => {
+      if (copiedId.value === id) copiedId.value = "";
+    }, 2000);
+  }
+};
+const fetchHistory = async (isLoadMore = false) => {
+  if (!config.token && !hasPermission.value) return;
+
+  if (isLoadMore) {
+    if (!historyHasMore.value || loadingMoreHistory.value || loadingHistory.value) return;
+    loadingMoreHistory.value = true;
+  } else {
+    // 刷新路径同样要去重：开关面板是随手动作，并发请求乱序返回会让列表回退到更旧的一份。
+    if (loadingHistory.value) return;
+    loadingHistory.value = true;
+    historyPage.value = 1;
+    historyHasMore.value = true;
+  }
+
+  try {
+    const params: any = {
+      page: historyPage.value,
+      page_size: 20,
+      group_by_conversation: true
+    };
+    if (historyKeyword.value) params.keyword = historyKeyword.value;
+    Object.assign(params, buildHistoryFilterParams(historyFilters.value));
+    // 集成锁定的优先级最高，必须最后覆盖
+    if (config.agentId) params.agent_id = config.agentId;
+
+    const res = await axios.get("/api/v1/chat/history", { params });
+    if (res.data?.data) {
+        const newItems = res.data.data.items || [];
+        if (isLoadMore) {
+            historyList.value = [...historyList.value, ...newItems];
+        } else {
+            historyList.value = newItems;
+        }
+
+        historyHasMore.value = newItems.length >= 20;
+        if (newItems.length > 0) {
+            historyPage.value += 1;
+        }
+    }
+  } catch (e) {
+    console.error("Failed to fetch history", e);
+  } finally {
+    if (isLoadMore) {
+        loadingMoreHistory.value = false;
+    } else {
+        loadingHistory.value = false;
+    }
+  }
+};
+/** 侧栏连续点击的采用序列：只让最后一次点击生效。 */
+let historyAdoptionSequence = 0;
+let historyAdoptionAbortController: AbortController | null = null;
+
+// —— 顶部「进行中的会话」：跨标签/跨设备的运行态唯一入口 ——
+// 兜住「会话还在跑，但界面已经没有停止按钮」的僵死场景：这里能看到全部
+// 仍在持锁的会话，并能直接终止（含续约已停的孤儿锁）。
+const showActiveRuns = ref(false);
+const activeRunsRef = ref<HTMLElement | null>(null);
+
+const fetchActiveRuns = async () => {
+  const res = await axios.get("/api/v1/chat/active-runs", { headers: embedAuthHeaders() });
+  const body = (res.data?.data || {}) as Record<string, any>;
+  const rawItems = Array.isArray(body.items) ? body.items : [];
+  return {
+    ttlSeconds: Number(body.ttl_seconds || 0) || 0,
+    staleBeforeTtlSeconds: Number(body.stale_before_ttl_seconds || 0) || 0,
+    items: rawItems
+      .map((raw: any) => ({
+        conversation_id: String(raw?.conversation_id || ""),
+        trace_id: typeof raw?.trace_id === "string" ? raw.trace_id : null,
+        ttl_seconds: typeof raw?.ttl_seconds === "number" ? raw.ttl_seconds : null,
+        state: raw?.state === "stale" ? ("stale" as const) : ("active" as const),
+      }))
+      .filter((item: ActiveRunItem) => item.conversation_id),
+  };
+};
+
+const {
+  items: activeRunItems,
+  count: activeRunsCount,
+  staleCount: activeRunsStaleCount,
+  loading: activeRunsLoading,
+  failed: activeRunsFailed,
+  refresh: refreshActiveRuns,
+  start: startActiveRunsWatch,
+  stop: stopActiveRunsWatch,
+  setOpen: setActiveRunsOpen,
+} = createActiveRunsController(fetchActiveRuns);
+
+// 「进行中的会话」角标原本只靠轮询（浮层关闭时 15s），刚发消息、刚答完都会滞后，
+// 而这两个时刻恰恰是用户最会抬头看角标的时刻。这里监听本会话「是否在处理」的翻转，
+// 延迟 500ms 补一次刷新：开始 → 角标 +1，结束 → 角标 -1。
+// 监听 isProcessing（而不是在各处收尾点插调用）是因为它的翻转覆盖了发送、权限确认、
+// 固化报表、中止、错误等全部路径；延迟则是因为后端运行锁的建立/释放与前端状态不同步，
+// 立刻查会拿到旧值。轮询仍然保留——别的会话的起落只能靠它。
+let activeRunsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleActiveRunsRefresh(delayMs = 500) {
+  if (activeRunsRefreshTimer !== null) clearTimeout(activeRunsRefreshTimer);
+  activeRunsRefreshTimer = setTimeout(() => {
+    activeRunsRefreshTimer = null;
+    void refreshActiveRuns();
+  }, delayMs);
+}
+watch(isProcessing, () => scheduleActiveRunsRefresh());
+
+// 标题尽力映射：活跃会话通常就在已加载的会话列表里；映射不到则退化为 ID 短码，
+// 至少让用户能靠会话 ID 与「当前会话」标记定位。
+const activeRunTitleIndex = computed(() => {
+  const index = new Map<string, string>();
+  for (const item of aggregatedHistoryList.value as any[]) {
+    const cid = String(item?.conversation_id || "");
+    if (!cid || index.has(cid)) continue;
+    const title = String(item?.query || item?.summary || "").trim();
+    if (title) index.set(cid, title);
+  }
+  return index;
+});
+
+// 运行锁里只存了一个 trace_id，智能体信息得从会话级 routing 记录里补：
+// 专家模式能确定是谁在跑，自动模式就如实写「自动委派」——不去猜一个可能错的专家名，
+// 毕竟 auto 模式下真正执行的是路由器选出来的。
+const activeRunAgentLabels = ref<Record<string, string>>({});
+/** 已尝试过的会话：失败时不要每轮轮询都重试一次。 */
+const activeRunAgentLabelAttempted = new Set<string>();
+
+const resolveActiveRunAgentLabels = async (items: readonly { conversation_id: string }[]) => {
+  const targets = items
+    .map((item) => String(item?.conversation_id || ""))
+    .filter((cid) => cid && !activeRunAgentLabelAttempted.has(cid));
+  if (!targets.length) return;
+  await Promise.all(
+    targets.map(async (cid) => {
+      activeRunAgentLabelAttempted.add(cid);
+      try {
+        const res = await axios.get(
+          `/api/v1/chat/conversation/${encodeURIComponent(cid)}/routing`,
+          { headers: embedAuthHeaders() },
+        );
+        const routing = res.data?.data;
+        let label = "自动委派";
+        if (routing?.routing_mode === "expert" && routing.expert_agent_id) {
+          const agentId = String(routing.expert_agent_id);
+          const agent = allowedAgents.value.find((a: any) => String(a.id) === agentId);
+          label = String(agent?.display_name || agent?.name || `专家 ${agentId.slice(0, 8)}`);
+        }
+        activeRunAgentLabels.value = { ...activeRunAgentLabels.value, [cid]: label };
+      } catch (e) {
+        // 查不到就不显示这一段：面板的标题、剩余时间与「终止」必须始终可用。
+        console.warn("[ActiveRuns] Failed to resolve agent label:", e);
+      }
+    }),
+  );
+};
+
+watch(activeRunItems, (items) => {
+  void resolveActiveRunAgentLabels(items);
+}, { immediate: true });
+
+const activeRunViews = computed(() =>
+  activeRunItems.value.map((item) => ({
+    ...item,
+    title: activeRunTitleIndex.value.get(item.conversation_id) || `会话 ${item.conversation_id.slice(0, 8)}`,
+    agent_label: activeRunAgentLabels.value[item.conversation_id] || "",
+  }))
+);
+
+// 历史列表项上的「进行中 / 疑似僵死」标识：其他会话靠 active-runs 轮询（浮层关闭时 15s
+// 一次，所以最多滞后一轮），当前会话则直接并入本地运行态——自己刚发起的这一轮立刻就能在
+// 列表上看到「进行中」，不必等下一轮轮询。
+const runningConversationIds = computed(() => {
+  const ids = new Set(
+    activeRunItems.value
+      .filter((item) => item.state === "active")
+      .map((item) => item.conversation_id),
+  );
+  if (conversationId.value && remoteRunActive.value) ids.add(conversationId.value);
+  return [...ids];
+});
+
+const staleRunConversationIds = computed(() =>
+  activeRunItems.value
+    .filter((item) => item.state === "stale")
+    .map((item) => item.conversation_id)
+);
+
+const activeRunsAriaLabel = computed(() =>
+  activeRunsStaleCount.value
+    ? `进行中的会话（${activeRunsCount.value} 个，其中 ${activeRunsStaleCount.value} 个疑似僵死）`
+    : `进行中的会话（${activeRunsCount.value} 个）`
+);
+
+const toggleActiveRuns = () => {
+  showActiveRuns.value = !showActiveRuns.value;
+};
+
+watch(showActiveRuns, (open) => {
+  setActiveRunsOpen(open);
+});
+
+// 空状态引导：这个入口没内容时，用户想找的多半是已结束的会话，直接把他送到会话历史。
+// 必须先收起浮层再开侧栏——移动端浮层是带遮罩的 modal，顺序反了侧栏会被压在遮罩下面。
+const handleActiveRunsOpenHistory = () => {
+  showActiveRuns.value = false;
+  showHistorySidebar.value = true;
+};
+
+const handleActiveRunSelect = async (targetConversationId: string) => {
+  showActiveRuns.value = false;
+  if (!targetConversationId || targetConversationId === conversationId.value) return;
+  await handleHistoryClick({ conversation_id: targetConversationId });
+};
+
+const handleActiveRunTerminate = async (item: { conversation_id: string; trace_id: string | null }) => {
+  const cid = String(item?.conversation_id || "");
+  if (!cid) return;
+  // 终止当前会话必须走 stopGeneration：本地 isProcessing、消息标记与恢复卡片
+  // 需要一起收敛，只发一个 HTTP 请求会让界面停在「生成中」。
+  if (cid === conversationId.value) {
+    stopGeneration({ notifySuccess: true });
+    return;
+  }
+  const result = await cancelConversationRunDetailed(cid, {
+    traceId: item?.trace_id || undefined,
+    headers: embedAuthHeaders(),
+  });
+  if (!result.success) {
+    showToast("释放失败，请重试", "warning");
+  } else if (result.runCancelled) {
+    showToast("已终止运行并释放锁", "success");
+  } else {
+    showToast("已强制释放（该会话任务未在运行）", "success");
+  }
+  void refreshActiveRuns();
+};
+
+const handleHistoryClick = async (item: any) => {
+    if (!item.conversation_id) {
+        if (item.query) userInput.value = item.query;
+        return;
+    }
+
+    // 侧栏列表是「本人视角」的，但这份列表也可能是上一位用户留下的旧列表，或者里面
+    // 混着历史遗留的串号会话。采用前仍要过一次归属校验：采用别人的会话，界面会切过去，
+    // 但后续提问会被后端 403 拦住，变成一个说不清的僵局。
+    const target = String(item.conversation_id);
+    const adoptionSequence = ++historyAdoptionSequence;
+    // 连续点击只保留最后一次校验：旧请求立即取消，避免它们占满浏览器同源连接数，
+    // 把最后一次的归属校验/历史加载排到队列后面。
+    historyAdoptionAbortController?.abort();
+    const adoptionAbortController = new AbortController();
+    historyAdoptionAbortController = adoptionAbortController;
+    const adoption = await checkConversationAdoption(target, adoptionAbortController.signal);
+    if (adoptionSequence !== historyAdoptionSequence) return;
+    if (historyAdoptionAbortController === adoptionAbortController) historyAdoptionAbortController = null;
+    if (adoption !== 'adoptable') {
+        showToast(
+            adoption === 'foreign'
+                ? "该会话属于其他用户，已阻止在当前身份下打开"
+                : "会话归属暂时无法确认，请稍后重试",
+            "warning",
+        );
+        if (adoption === 'foreign') {
+            if (readStoredConversationId() === target) clearStoredConversationId();
+            void fetchHistory();
+        }
+        return;
+    }
+
+    // 点自己当前会话：没有可切换的目标。此时若照旧清空消息列表，正在流式输出的这条草稿会变成
+    // 「脱离列表的孤儿」——SSE 仍往它写（写入目标是 sendMessageInternal 内的局部 ref，见那里的
+    // 注释），而恢复器又因 streamInFlight 为真不介入（它只在没有活流时接管），界面就会冻结在
+    // 点击那一刻，直到本轮结束才一次性补齐。这里只把视图滚到底，不做任何重载。
+    // 消息为空时不走这条：初始化中／异常态的当前会话仍需要正常重载。
+    if (target === conversationId.value && messages.value.length > 0) {
+      if (isMobile.value) showHistorySidebar.value = false;
+      scrollToBottom();
+      return;
+    }
+
+    const previousId = conversationId.value;
+    if (previousId && previousId !== target) {
+        finalizeConversationInBackground(previousId);
+    }
+
+    // Switch to this conversation
+    resetEmbedThinkingOverrides();
+    // 切到别的会话：上一轮的会话级运行时状态整体复位（唯一入口，见函数注释）。判定交给
+    // 纯函数——点历史里的当前会话不该清掉在途进度；草稿已属于目标时也无需重绑。
+    // 这次 `resetRunStatus` 会把 remoteRunActive 翻回 false，触发的「运行结束」是「换会话」
+    // 而非「本轮结束」，所以要先立起抑制标志（watcher 异步 flush，仍能读到）。
+    if (shouldRebindReplayOnConversationSwitch(activeStreamDraft?.conversationId, target)) {
+      suppressRunTerminalSyncForConversationSwitch = true;
+      resetConversationScopedState();
+    }
+    conversationId.value = target;
+    persistConversationId(target);
+    updateActiveConversationOnServer(target);
+    // 恢复该会话自己的专家选择；无记录时 loadConversationRouting 会保持账号默认。
+    void loadConversationRouting(target);
+
+    // Reset message list and history state
+    messages.value = [];
+    historyOffset.value = 0;
+    hasMoreHistory.value = true;
+
+    // Load the full history for this conversation
+    // 顺序与初始化路径一致（先历史、后快照）：历史会整体替换消息列表，先恢复快照会被冲掉。
+    void fetchConversationHistory(false).then(() => restoreEmbedStreamSnapshot());
+
+    // Auto-close sidebar on mobile
+    if (isMobile.value) {
+        showHistorySidebar.value = false;
+    }
+};
+const handleDeleteHistory = async (traceId: string) => {
+  try {
+    await axios.delete(`/api/v1/chat/history/${traceId}`);
+    await fetchHistory();
+  } catch (e) {
+    console.error("Failed to delete history", e);
+  }
+};
+const showDeleteGroupModal = ref(false);
+const groupToDelete = ref<any>(null);
+
+const handleDeleteGroup = (group: any) => {
+  if (!group || !group.items || group.items.length === 0) return;
+  groupToDelete.value = group;
+  showDeleteGroupModal.value = true;
+};
+
+const confirmDeleteGroup = async () => {
+  const group = groupToDelete.value;
+  if (!group || !group.items || group.items.length === 0) {
+    showDeleteGroupModal.value = false;
+    groupToDelete.value = null;
+    return;
+  }
+
+  const convIds = group.items
+    .map((item: any) => item.conversation_id)
+    .filter(Boolean);
+
+  if (convIds.length === 0) {
+    showDeleteGroupModal.value = false;
+    groupToDelete.value = null;
+    return;
+  }
+
+  try {
+    const headers: any = {};
+    if (config.token) {
+      headers["Authorization"] = `Bearer ${config.token}`;
+      headers["X-API-Key"] = config.token;
+    }
+
+    await axios.post(
+      "/api/v1/chat/history/batch-delete",
+      { conversation_ids: convIds },
+      { headers }
+    );
+
+    // 检查是否包含当前正在对话的会话 ID
+    if (convIds.includes(conversationId.value)) {
+      // 删掉当前会话等于丢掉它的界面：同样要停掉在途生成，否则输入框会留锁。
+      resetConversationScopedState();
+      messages.value = [];
+      generateNewConversation();
+    }
+
+    // 被删掉的会话若在置顶里，同步移除（否则置顶区会留下点开为空的条目）。
+    void removePinnedConversations(convIds);
+
+    await fetchHistory();
+  } catch (e) {
+    console.error("Failed to batch delete group history", e);
+    showToast("批量删除失败，请稍后重试", "error");
+  } finally {
+    showDeleteGroupModal.value = false;
+    groupToDelete.value = null;
+  }
+};
+
+const handleNewChatFromSidebar = () => {
+  resetSession();
+  if (isMobile.value) {
+    showHistorySidebar.value = false;
+  }
+};
+
+const handleDeleteSingleHistory = async (item: any) => {
+  const targetConvId = item.conversation_id;
+  if (!targetConvId) {
+    if (item.trace_id) {
+      await handleDeleteHistory(item.trace_id);
+    }
+    return;
+  }
+  try {
+    const headers: any = {};
+    if (config.token) {
+      headers["Authorization"] = `Bearer ${config.token}`;
+      headers["X-API-Key"] = config.token;
+    }
+    await axios.post(
+      "/api/v1/chat/history/batch-delete",
+      { conversation_ids: [targetConvId] },
+      { headers }
+    );
+    historyList.value = historyList.value.filter(
+      (h) => h.conversation_id !== targetConvId
+    );
+    // 会话已不存在，置顶条目必须同步移除，否则会留下点击必然为空的僵尸置顶。
+    void removePinnedConversations([targetConvId]);
+    showToast("会话已删除", "success");
+    if (conversationId.value === targetConvId) {
+      resetSession();
+    }
+  } catch (e) {
+    console.error("Failed to delete conversation", e);
+    showToast("删除会话失败", "error");
+  }
+};
+
+const handleExportChatFromSidebar = async (item: any) => {
+  const targetConvId = String(item?.conversation_id || "");
+  if (!targetConvId) {
+    // 按单轮 trace 聚合的条目没有会话 ID：没有可枚举的完整会话，明确告知而不是静默失败。
+    showToast("该记录没有会话 ID，暂不支持导出", "warning");
+    return;
+  }
+  // 导出可能分页拉取多页，先给一个不自动消失的进度 toast；
+  // 完成/失败时先移除它，避免和结果 toast 同屏出现两个。
+  const loadingToastId = showToast("正在导出对话记录...", "info", 0);
+  try {
+    const headers: any = {};
+    if (config.token) {
+      headers["Authorization"] = `Bearer ${config.token}`;
+      headers["X-API-Key"] = config.token;
+    }
+
+    // 取数必须走 `/chat/history`：后端没有 `/chat/conversation/{id}/history`
+    // 这个路由（会话详情是 `/chat/conversation/{id}`，且以 Redis 为主、默认只回
+    // 50 条），沿用旧路径会稳定 404，于是「导出对话失败」。
+    // 这里按 conversation_id 分页拉全，保证导出的轮次与界面历史一致。
+    const pageSize = 100;
+    const turns: Array<{ role: "user" | "agent"; content: string; createdAt?: string }> = [];
+    let page = 1;
+    let collected = 0;
+    let total = 0;
+    do {
+      const res = await axios.get("/api/v1/chat/history", {
+        params: { conversation_id: targetConvId, page, page_size: pageSize },
+        headers,
+      });
+      const batch: any[] = res.data?.data?.items || [];
+      total = Number(res.data?.data?.total ?? batch.length) || 0;
+      collected += batch.length;
+      // 接口按时间倒序返回，逐页 reverse 后即与页面渲染顺序（旧 → 新）一致。
+      [...batch].reverse().forEach((turn: any) => {
+        const question = String(turn?.query || "").trim();
+        if (question) {
+          turns.push({ role: "user", content: question, createdAt: turn?.created_at });
+        }
+        const answer = String(turn?.summary || "").trim();
+        if (answer) {
+          turns.push({ role: "agent", content: answer, createdAt: turn?.created_at });
+        }
+      });
+      if (batch.length < pageSize || collected >= total) break;
+      page += 1;
+    } while (page <= 50);
+
+    // 服务端还没有落库（例如刚发出、仍在流式输出）时，退回当前界面的消息，
+    // 避免「文件里什么都没有」。
+    if (turns.length === 0 && targetConvId === conversationId.value) {
+      messages.value.forEach((m: any) => {
+        if (m.role !== "user" && m.role !== "agent" && m.role !== "assistant") return;
+        const content = String(m.content || "").trim();
+        if (!content) return;
+        turns.push({
+          role: m.role === "user" ? "user" : "agent",
+          content,
+          createdAt: m.timestamp,
+        });
+      });
+    }
+
+    if (turns.length === 0) {
+      removeToast(loadingToastId);
+      showToast("该会话暂无可导出的消息", "warning");
+      return;
+    }
+
+    let md = `# 会话导出记录\n\n- **会话 ID**: \`${targetConvId}\`\n- **导出时间**: ${new Date().toLocaleString()}\n- **消息条数**: ${turns.length}\n\n---\n\n`;
+    turns.forEach((turn) => {
+      const role = turn.role === "user" ? "👤 **用户**" : "🤖 **AI 助手**";
+      const time = turn.createdAt ? ` _(${new Date(turn.createdAt).toLocaleString()})_` : "";
+      md += `### ${role}${time}\n\n${turn.content}\n\n---\n\n`;
+    });
+    const filename = `chat_session_${targetConvId.slice(0, 8)}_${Date.now()}.md`;
+    downloadMarkdownFile(filename, md);
+    removeToast(loadingToastId);
+    showToast(`导出成功（${turns.length} 条消息）`, "success");
+  } catch (e) {
+    removeToast(loadingToastId);
+    console.error("Export conversation failed", e);
+    showToast("导出对话失败", "error");
+  }
+};
+
+const handleGlobalKeydown = (e: KeyboardEvent) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "h") {
+    e.preventDefault();
+    showHistorySidebar.value = !showHistorySidebar.value;
+  }
+};
+
+// Delete Confirmation
+const showDeleteModal = ref(false);
+const traceToDelete = ref<string | null>(null);
+// Edit & Resend State
+const editingMsgId = ref<number | null>(null);
+const editContent = ref("");
+
+const truncateServerHistory = async (keepCount: number): Promise<boolean> => {
+  if (!conversationId.value) return true;
+  try {
+    const response = await axios.post(
+      "/api/v1/chat/history/truncate",
+      { conversation_id: conversationId.value, keep_count: keepCount },
+      { headers: embedAuthHeaders() },
+    );
+    return response.data?.data?.success !== false;
+  } catch (e) {
+    console.warn("Failed to truncate server history before resend", e);
+    showToast("同步会话历史失败，请稍后重试", "error");
+    return false;
+  }
+};
+
+const startEdit = (msg: Message) => {
+  editingMsgId.value = msg.id;
+  editContent.value = splitUserMessageContent(msg.content).userPart;
+};
+const cancelEdit = () => {
+  editingMsgId.value = null;
+  editContent.value = "";
+};
+const saveAndResend = async () => {
+  await sendPreparedMessage(async () => {
+    if (editingMsgId.value === null) return null;
+    const msgIndex = messages.value.findIndex(m => m.id === editingMsgId.value);
+    if (msgIndex === -1) return null;
+    const originalMsg = messages.value[msgIndex];
+    if (!originalMsg) return null;
+    const newContent = editContent.value.trim();
+    if (!newContent) return null;
+
+    // 在任何 await 前冻结本次重发的参数，避免编辑框/附件被后续交互改写。
+    const clientRequestId = createClientRequestId();
+    const originalFiles = (originalMsg.files || []).map((file) => ({ ...file }));
+    const remainingMessages = messages.value.slice(0, msgIndex);
+    const keepCount = remainingMessages.filter(isChatContextMessage).length;
+
+    if (!(await truncateServerHistory(keepCount))) return null;
+
+    messages.value = remainingMessages;
+    editingMsgId.value = null;
+    editContent.value = "";
+    return { content: newContent, files: originalFiles, clientRequestId };
+  });
+};
+
+const handleAnalyzeDiff = async (question: string) => {
+  canvasVisible.value = false;
+  await sendMessage({ content: question });
+};
+
+const handleAnalyzeCodeOutput = async (question: string) => {
+  canvasVisible.value = false;
+  await sendMessage({ content: question });
+};
+
+const handlePreviewImageUrl = (url: string, filename: string) => {
+  handleOpenCanvas({
+    type: 'image',
+    title: filename || '图片预览',
+    content: url
+  });
+};
+
+const resolveFileUrl = (rawUrl: string): string => {
+  if (!rawUrl) return '';
+  let url = rawUrl;
+  if (url.includes('###HTML_TAG_PLACEHOLDER_')) {
+    url = url.replace(/###HTML_TAG_PLACEHOLDER_\d+###/g, '').trim();
+  }
+  if (isDirectRenderableUrl(url)) {
+    return url;
+  }
+  const publicUploadUrl = resolvePublicUploadsPreviewUrl(url);
+  if (publicUploadUrl) return publicUploadUrl;
+  // 兼容绝对路径与相对物理路径，只要它不属于静态路由与API接口路由，均通过后端预览API拉取
+  if (!url.startsWith('/static/') &&
+      !url.startsWith('/api/') &&
+      !url.startsWith('/assets/')) {
+    const convParam = conversationId.value ? `&conversation_id=${encodeURIComponent(conversationId.value)}` : "";
+    return `/api/v1/chat/fs/preview?path=${encodeURIComponent(url)}${convParam}`;
+  }
+  return url;
+};
+
+const {
+  canvasVisible,
+  canvasPinned,
+  canvasFromWorkspace,
+  canvasData,
+  handleWorkspaceFilePreview,
+  handleGeneratedFilePreview,
+  handleOpenCanvas,
+  closeCanvas,
+  revokeActiveBlobUrl,
+} = useWorkspaceCanvas({
+  getConversationId: () => conversationId.value,
+  resolveFileUrl,
+  showToast,
+  isMobile: () => isMobile.value,
+});
+onUnmounted(() => revokeActiveBlobUrl());
+
+// Long-Term Memory States
+const activeLtmPreference = ref<any>(null);
+const ignoreLtmThisTurn = ref(false);
+const ltmAlertedInSession = ref(false);
+
+watch(conversationId, () => {
+  ltmAlertedInSession.value = false;
+});
+
+const handleIgnoreLtm = () => {
+  ignoreLtmThisTurn.value = true;
+  activeLtmPreference.value = null;
+  showToast("已在此会话本轮提问中忽略该记忆偏好", "info");
+};
+
+const disableGroundingWithToast = () => {
+  config.enableGrounding = false;
+  showToast("反幻觉校验已关闭", "info");
+};
+
+const canPreviewFile = (file: any) => {
+  const ext = (file.ext || '').toLowerCase();
+  return ext === 'html' || ext === 'htm' || ext === 'pdf' || ext === 'csv' || ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp' || ext === 'gif';
+};
+
+const handlePreviewFile = (file: any) => {
+  const ext = (file.ext || '').toLowerCase();
+  let type: 'html' | 'pdf' | 'csv' | 'image' = 'image';
+  if (ext === 'html' || ext === 'htm') type = 'html';
+  else if (ext === 'pdf') type = 'pdf';
+  else if (ext === 'csv') type = 'csv';
+
+  handleOpenCanvas({
+    type,
+    title: file.filename,
+    content: file.url
+  });
+};
+
+const confirmDeleteTrace = async () => {
+  if (traceToDelete.value) {
+    await handleDeleteHistory(traceToDelete.value);
+    showDeleteModal.value = false;
+    showTraceModal.value = false;
+    traceToDelete.value = null;
+  }
+};
+const openDeleteModal = (traceId: string) => {
+    traceToDelete.value = traceId;
+    showDeleteModal.value = true;
+};
+const formatDate = (dateStr: string) => {
+  if (!dateStr) return "-";
+  return new Date(dateStr).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+};
+// Trace Modal
+const showTraceModal = ref(false);
+const traceLogData = ref<any>(null);
+const activeHistoryItem = ref<any>(null);
+const activeHistoryIndex = computed(() => {
+    if (!activeHistoryItem.value || !activeHistoryItem.value.trace_id) return -1;
+    return aggregatedHistoryList.value.findIndex((h: any) => h.trace_id === activeHistoryItem.value.trace_id);
+});
+const conversationTurns = ref<any[]>([]); // 新增：存储会话的多个回合
+const loadingTrace = ref(false);
+const expandedTraceSteps = ref<Record<string, boolean>>({});
+const showThinkingProcess = ref(false); // Default collapsed
+
+const openTraceLogs = async (traceIdOrItem: string | any) => {
+  const isString = typeof traceIdOrItem === 'string';
+  const traceId = isString ? traceIdOrItem : traceIdOrItem?.trace_id;
+  let convId = isString ? null : traceIdOrItem?.conversation_id;
+
+  if (isString) {
+      const found = historyList.value.find(h => h.trace_id === traceId);
+      if (found) {
+          activeHistoryItem.value = found;
+          convId = found.conversation_id;
+      } else {
+          activeHistoryItem.value = null;
+      }
+  } else {
+      activeHistoryItem.value = traceIdOrItem;
+  }
+
+  if (!traceId) return;
+
+  showTraceModal.value = true;
+  loadingTrace.value = true;
+  traceLogData.value = null;
+  conversationTurns.value = [];
+  expandedTraceSteps.value = {};
+  showThinkingProcess.value = false;
+
+  try {
+    // 1. 先获取基础信息，特别是如果是从 trace_id 进来的，需要拿到它的 convId
+    const res = await axios.get(`/api/v1/chat/logs/${traceId}`);
+    if (res.data?.data) {
+        traceLogData.value = res.data.data;
+    }
+
+    // 2. 获取整个会话的所有回合
+    const cid = convId || traceLogData.value?.history?.conversation_id;
+    if (cid) {
+        const historyRes = await axios.get(`/api/v1/chat/history`, {
+            params: { conversation_id: cid, page_size: 100 }
+        });
+        if (historyRes.data?.data?.items) {
+            // 结果按时间正序排列（后端返回的是倒序，所以这里反转一下）
+            const sortedItems = [...historyRes.data.data.items].reverse();
+
+            // 初始化每个回合的状态：全部默认折叠
+            conversationTurns.value = sortedItems.map((item: any) => ({
+                ...item,
+                steps: item.trace_id === traceId ? (traceLogData.value?.steps || []) : [],
+                loading: false,
+                isExpanded: false
+            }));
+        }
+    } else if (traceLogData.value?.history) {
+        conversationTurns.value = [{
+            ...traceLogData.value.history,
+            steps: traceLogData.value.steps || [],
+            isExpanded: true
+        }];
+    }
+  } catch (e) {
+    console.error("Failed to load trace logs", e);
+  } finally {
+    loadingTrace.value = false;
+  }
+};
+
+const toggleTurnSteps = async (turn: any) => {
+    turn.isExpanded = !turn.isExpanded;
+    // 如果展开且没有数据，则去加载
+    if (turn.isExpanded && (!turn.steps || turn.steps.length === 0)) {
+        turn.loading = true;
+        try {
+            const res = await axios.get(`/api/v1/chat/logs/${turn.trace_id}`);
+            if (res.data?.data?.steps) {
+                turn.steps = res.data.data.steps;
+            }
+        } catch (e) {
+            console.error("Failed to fetch steps for turn", e);
+        } finally {
+            turn.loading = false;
+        }
+    }
+};
+
+const continueChatFromTrace = () => {
+    const itemToLoad = activeHistoryItem.value || traceLogData.value?.history;
+    if (itemToLoad) {
+        handleHistoryClick(itemToLoad);
+        showTraceModal.value = false;
+    }
+};
+
+// Fix for mobile ghost clicks
+const closeTraceModal = () => {
+    // Small delay to let the click event finish on the modal before it disappears,
+    // preventing it from falling through to the history sidebar backdrop.
+    setTimeout(() => {
+        showTraceModal.value = false;
+    }, 100);
+};
+
+// Command Deletion State
+const showDeleteCommandModal = ref(false);
+const commandToDelete = ref<any>(null);
+const confirmDeleteCommand = (cmd: any) => {
+  commandToDelete.value = cmd;
+  showDeleteCommandModal.value = true;
+};
+const executeDeleteCommand = async () => {
+  if (!commandToDelete.value) return;
+  try {
+    await axios.delete(`/api/portal/slash-commands/${commandToDelete.value.id}`);
+    await fetchSlashCommands();
+    showDeleteCommandModal.value = false;
+    commandToDelete.value = null;
+  } catch (e) {
+    console.error("Failed to delete command", e);
+  }
+};
+
+watch(showHistorySidebar, (val) => {
+    // 桌面端记住开关；窄屏浮层是临时态，不覆盖桌面偏好。只存本机，不与账号偏好同步。
+    if (isHistorySidebarDesktop()) {
+      try {
+        localStorage.setItem(HISTORY_SIDEBAR_OPEN_KEY, val ? "1" : "0");
+      } catch {
+        // localStorage 不可用时仅本次生效
+      }
+    }
+    if (!val) return;
+    // 打开面板总是取最新。此前这里带了「列表为空」的条件，首次拉取之后列表就非空了，于是
+    // 后续每次打开都只显示那份旧快照——新会话不出现、当前会话的轮次数 / 摘要 / 时间全部
+    // 过期，用户只能手动点面板里的刷新按钮。
+    fetchHistory();
+});
+watch(historyKeyword, () => {
+    if (showHistorySidebar.value) {
+        fetchHistory();
+    }
+});
+// Settings
+const showSettings = ref(false);
+// 打开设置时刷新一次「上次完成」，避免刚进页面时状态还没加载
+watch(showSettings, (visible) => {
+  if (visible) void tour.loadState();
+});
+const showHelpModal = ref(false);
+
+
+// 固化报表暂存状态
+const showSaveReportModal = ref(false);
+const isEditingReport = ref(false);
+const editingReportId = ref<string | null>(null);
+const saveReportForm = ref({
+  id: null as number | string | null,
+  title: '',
+  description: '',
+  sql_content: '',
+  dataset_id: null as number | null,
+  dataset_name: '',
+  data_source: 'default_clickhouse',
+  original_query: '',
+  mode: 'static_sql',
+  sql_template: '',
+  params_schema: [] as any[],
+  default_params: {} as Record<string, any>,
+  column_meta: null as Record<string, any> | null,
+  analysis_mode: 'auto',
+  tags_input: '',
+});
+
+const showReportRunModal = ref(false);
+const pendingSavedReport = ref<SavedReportPayload | null>(null);
+const isPreviewingSavedReport = ref(false);
+const reportRunPreview = ref<any | null>(null);
+const reportRunForm = ref({
+  dateRange: 'month_start_to_today',
+  startDate: '',
+  endDate: '',
+  monthRange: 'last_6_completed_months',
+  startMonth: '',
+  endMonth: '',
+  customParams: {} as Record<string, any>,
+  autoAnalyze: true,
+});
+
+const openSaveReportModal = (sql: string, agentMessage: any) => {
+  isEditingReport.value = false;
+  editingReportId.value = null;
+  let originalQuery = '';
+  if (agentMessage && messages.value) {
+    const idx = messages.value.findIndex((m: any) => m.id === agentMessage.id);
+    if (idx > 0) {
+      for (let i = idx - 1; i >= 0; i--) {
+        const previousMessage = messages.value[i];
+        if (previousMessage?.role === 'user') {
+          const content = previousMessage.content || '';
+          if (content.includes('---')) {
+            originalQuery = (content.split('---')[0] || '').trim();
+          } else {
+            originalQuery = content.trim();
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  let cleanSql = sql || '';
+  if (cleanSql.includes('[Executed SQL]:')) {
+    cleanSql = cleanSql.replace(/\[Executed\s+SQL\]:\s*/i, '').trim();
+  }
+
+  if (!originalQuery && cleanSql) {
+    const fromMatch = cleanSql.match(/from\s+([a-zA-Z0-9_]+)/i);
+    if (fromMatch && fromMatch[1]) {
+      originalQuery = `${fromMatch[1]}数据查询`;
+    }
+  }
+
+  const detectedTemplate = detectSavedReportDateTemplate(cleanSql);
+  const requirementIntent = parseRequirementAnalysisFromMessage(agentMessage);
+  const sourceContext = resolveSavedReportSourceContext(agentMessage);
+
+  saveReportForm.value = {
+    id: null,
+    title: deriveSavedReportTitle(requirementIntent, originalQuery),
+    description: deriveSavedReportDescription(requirementIntent, originalQuery),
+    sql_content: cleanSql,
+    dataset_id: sourceContext.dataset_id,
+    dataset_name: sourceContext.dataset_name,
+    data_source: sourceContext.data_source,
+    original_query: originalQuery,
+    mode: detectedTemplate ? 'param_sql' : 'static_sql',
+    sql_template: detectedTemplate?.sql_template || '',
+    params_schema: detectedTemplate?.params_schema || [],
+    default_params: detectedTemplate?.default_params || {},
+    column_meta: extractColumnMetaFromAgentMessage(agentMessage),
+    analysis_mode: 'auto',
+    tags_input: deriveSavedReportTagsInput(requirementIntent, originalQuery),
+  };
+  showSaveReportModal.value = true;
+};
+
+const openEditReportModal = (report: any) => {
+  isEditingReport.value = true;
+  editingReportId.value = report.id;
+  saveReportForm.value = {
+    id: report.id,
+    title: report.title || '',
+    description: report.description || '',
+    sql_content: report.sql_content || '',
+    dataset_id: report.dataset_id ?? null,
+    dataset_name: report.dataset_name || '',
+    data_source: report.data_source || 'default_clickhouse',
+    original_query: report.original_query || '',
+    mode: report.mode || 'static_sql',
+    sql_template: report.sql_template || '',
+    params_schema: report.params_schema || [],
+    default_params: report.default_params || {},
+    column_meta: report.column_meta || null,
+    analysis_mode: 'auto',
+    tags_input: Array.isArray(report.tags) ? report.tags.join(', ') : '',
+  };
+  showSaveReportModal.value = true;
+};
+
+const closeSavedReportEditor = () => {
+  showSaveReportModal.value = false;
+  isEditingReport.value = false;
+  editingReportId.value = null;
+};
+
+const handleSavedReportEditorCreated = () => {
+  closeSavedReportEditor();
+};
+
+const savedReportNeedsRunOptions = (report: SavedReportPayload) => {
+  return report.mode === 'param_sql' && Array.isArray(report.params_schema) && report.params_schema.length > 0;
+};
+
+const savedReportUsesMonthRange = (report?: SavedReportPayload | null) => {
+  return Boolean(report?.params_schema?.some((item: any) => item?.type === 'month_range' || item?.name === 'month_range'));
+};
+
+const savedReportUsesDateRange = (report?: SavedReportPayload | null) => {
+  return Boolean(report?.params_schema?.some((item: any) => item?.type === 'date_range' || item?.name === 'date_range'));
+};
+
+let suppressSavedReportRunPreviewWatch = false;
+
+const prepareSavedReportRunForm = (report: SavedReportPayload) => {
+  suppressSavedReportRunPreviewWatch = true;
+  const defaults = report.default_params || {};
+  const customParams: Record<string, any> = {};
+  for (const item of report.params_schema || []) {
+    const type = String(item?.type || '');
+    const name = String(item?.name || '');
+    if (!name || type === 'date_range' || type === 'month_range' || name === 'date_range' || name === 'month_range') continue;
+    customParams[name] = defaults[name] ?? item.default ?? (type === 'select' ? item.options?.[0] ?? '' : '');
+  }
+  reportRunForm.value = {
+    dateRange: String(defaults.date_range || 'month_start_to_today'),
+    startDate: String(defaults.start_date || todayDateString()),
+    endDate: String(defaults.end_date || todayDateString()),
+    monthRange: String(defaults.month_range || 'last_6_completed_months'),
+    startMonth: String(defaults.start_month || todayMonthString()),
+    endMonth: String(defaults.end_month || todayMonthString()),
+    customParams,
+    autoAnalyze: true,
+  };
+  nextTick(() => {
+    suppressSavedReportRunPreviewWatch = false;
+  });
+};
+
+let savedReportPreviewSeq = 0;
+let savedReportPreviewAbort: AbortController | null = null;
+
+const previewSavedReportRun = async () => {
+  const report = pendingSavedReport.value;
+  if (!report) return;
+  const seq = ++savedReportPreviewSeq;
+  savedReportPreviewAbort?.abort();
+  const controller = new AbortController();
+  savedReportPreviewAbort = controller;
+  isPreviewingSavedReport.value = true;
+  reportRunPreview.value = null;
+  try {
+    const res = await axios.post(`/api/portal/saved-reports/${report.id}/preview`, {
+      params: buildSavedReportRunParams(pendingSavedReport.value, reportRunForm.value),
+      analysis_mode: 'auto',
+    }, { signal: controller.signal });
+    if (seq !== savedReportPreviewSeq) return;
+    reportRunPreview.value = res.data?.data || null;
+  } catch (error: any) {
+    if (controller.signal.aborted || seq !== savedReportPreviewSeq) return;
+    console.error("Failed to preview saved report:", error);
+    reportRunPreview.value = {
+      rendered_sql: report.sql_content,
+      permission_status: 'unknown',
+      permission_message: extractSavedReportExecuteErrorMessage(error),
+      can_run: true,
+    };
+  } finally {
+    if (seq === savedReportPreviewSeq) {
+      isPreviewingSavedReport.value = false;
+    }
+  }
+};
+
+let savedReportPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+
+const scheduleSavedReportPreview = (immediate = false) => {
+  if (!showReportRunModal.value || !pendingSavedReport.value) return;
+  if (!immediate && suppressSavedReportRunPreviewWatch) return;
+  if (savedReportPreviewTimer) clearTimeout(savedReportPreviewTimer);
+  if (immediate) {
+    void previewSavedReportRun();
+    return;
+  }
+  savedReportPreviewTimer = setTimeout(() => previewSavedReportRun(), 250);
+};
+
+watch(
+  () => [
+    reportRunForm.value.dateRange,
+    reportRunForm.value.startDate,
+    reportRunForm.value.endDate,
+    reportRunForm.value.monthRange,
+    reportRunForm.value.startMonth,
+    reportRunForm.value.endMonth,
+    JSON.stringify(reportRunForm.value.customParams),
+  ],
+  () => scheduleSavedReportPreview(false),
+  { flush: 'post' }
+);
+
+onUnmounted(() => {
+  savedReportPreviewAbort?.abort();
+  if (savedReportPreviewTimer) clearTimeout(savedReportPreviewTimer);
+});
+
+const handleExecuteSavedReport = async (report: SavedReportPayload) => {
+  if (!savedReportNeedsRunOptions(report)) {
+    pendingSavedReport.value = report;
+    reportRunPreview.value = null;
+    await executeSavedReportWithOptions(report);
+    return;
+  }
+  pendingSavedReport.value = report;
+  reportRunPreview.value = null;
+  showReportRunModal.value = true;
+  prepareSavedReportRunForm(report);
+  scheduleSavedReportPreview(true);
+};
+
+const executeSavedReportWithOptions = async (reportArg?: SavedReportPayload | null) => {
+  const report = reportArg || pendingSavedReport.value;
+  if (!report) return;
+  if (isProcessing.value) return;
+  if (savedReportNeedsRunOptions(report) && (isPreviewingSavedReport.value || !reportRunPreview.value)) {
+    showToast('请等待运行预览完成后再执行。', 'error');
+    return;
+  }
+  if (reportRunPreview.value?.can_run === false) {
+    showToast('暂无该报表所需数据权限，无法运行。', 'error');
+    return;
+  }
+
+  showReportRunModal.value = false;
+
+  if (showPortalDrawer.value && !portalKeepOpenOnQuestion.value) {
+    closePortalDrawer();
+  }
+
+  // 保证有会话 ID，否则 Redis last_data_result 无法写入，后续「可视化分析」会丢上下文
+  if (!conversationId.value) {
+    generateNewConversation();
+  }
+
+  isProcessing.value = true;
+
+  messages.value.push({
+    id: Date.now(),
+    role: "user",
+    content: `📌 执行固化 SQL 报表: ${report.title}`,
+    timestamp: new Date().toISOString(),
+  });
+
+  const agentMsg = ref<Message>({
+    id: Date.now() + 1,
+    role: "agent",
+    agentName: "chat-bi",
+    agentDisplayName: "数据智能助手",
+    isSavedReportResult: true,
+    content: "",
+    isThinking: true,
+    thinkingText: "正在执行固化报表，请稍候...",
+    logs: [],
+    thoughtStartTime: Date.now(),
+    thoughtDuration: "0.0",
+    isThoughtExpanded: false,
+    isCitationsExpanded: false,
+    timestamp: new Date().toISOString(),
+  });
+  messages.value.push(agentMsg.value);
+  autoScrollEnabled.value = true;
+  await nextTick();
+  scrollToBottom(true);
+
+  try {
+    const res = await axios.post(`/api/portal/saved-reports/${report.id}/execute`, {
+      params: buildSavedReportRunParams(pendingSavedReport.value, reportRunForm.value),
+      analysis_mode: 'auto',
+      defer_analysis: true,
+    }, {
+      params: { conversation_id: conversationId.value },
+      timeout: 60000,
+    });
+
+    agentMsg.value.isThinking = false;
+    agentMsg.value.thinkingText = "";
+
+    let detailsText = "";
+    let execResult: any = null;
+
+    if (res.data && res.data.data !== undefined) {
+      execResult = {
+        ...res.data.data,
+        analysis_status: res.data.data?.analysis_status || 'deferred',
+      };
+      agentMsg.value.content = composeSavedReportExecuteMarkdown(report.title, execResult);
+      detailsText = `${report.sql_content}\n--- 结果 ---\n${typeof execResult === 'object' ? JSON.stringify(execResult, null, 2) : String(execResult)}`;
+      agentMsg.value.permissionNotice = execResult?.permission_notice;
+      if (execResult?.chatbi_insight?.actions?.length) {
+        agentMsg.value.chatbiInsight = execResult.chatbi_insight;
+      }
+    } else {
+      agentMsg.value.content = composeSavedReportExecuteMarkdown(report.title, null);
+      detailsText = `${report.sql_content}\n--- 结果 ---\n无`;
+    }
+
+    agentMsg.value.logs = [
+      {
+        id: `log_${Date.now()}`,
+        name: "execute_sql_query",
+        title: "工具完成: execute_sql_query",
+        category: "sql",
+        status: "success",
+        isExpanded: false,
+        details: detailsText,
+      }
+    ];
+    pendingSavedReport.value = null;
+
+    if (execResult) {
+      try {
+        agentMsg.value.isThinking = true;
+        agentMsg.value.thinkingText = "正在生成业务解读…";
+        const analyzeRes = await axios.post(`/api/portal/saved-reports/${report.id}/analyze`, {
+          conversation_id: conversationId.value,
+          run_id: execResult.run_id,
+        }, {
+          params: { conversation_id: conversationId.value },
+          timeout: 120000,
+        });
+        const merged = mergeSavedReportAnalysisIntoResult(execResult, analyzeRes.data?.data || {});
+        agentMsg.value.content = composeSavedReportExecuteMarkdown(report.title, merged);
+      } catch (analyzeError) {
+        console.warn("Failed to analyze saved report:", analyzeError);
+        agentMsg.value.content = composeSavedReportExecuteMarkdown(report.title, {
+          ...execResult,
+          analysis_status: 'error',
+        });
+      } finally {
+        agentMsg.value.isThinking = false;
+        agentMsg.value.thinkingText = "";
+      }
+    }
+  } catch (error: any) {
+    console.error("Failed to execute saved report:", error);
+    agentMsg.value.isThinking = false;
+    agentMsg.value.thinkingText = "";
+
+    const errorMsg = extractSavedReportExecuteErrorMessage(error);
+
+    agentMsg.value.content = `### ❌ 报表执行失败\n\n在直连执行 SQL 报表时遇到错误：\n\n\`\`\`\n${errorMsg}\n\`\`\``;
+    agentMsg.value.logs = [
+      {
+        id: `log_${Date.now()}`,
+        name: "execute_sql_query",
+        title: "工具完成: execute_sql_query",
+        category: "sql",
+        status: "error",
+        isExpanded: false,
+        details: `${report.sql_content}\n--- 错误 ---\n${errorMsg}`,
+      }
+    ];
+  } finally {
+    isProcessing.value = false;
+    await nextTick();
+    scrollToBottom(true);
+  }
+};
+
+watch(showSettings, (val) => {
+    if (val) {
+        fetchAllowedAgents();
+    }
+});
+const activeColor = ref("#1677ff");
+
+// 技能工作流选择器
+const skillCreatedInfo = ref<SkillCreatedInfo | null>(null);
+// 「已创建个人技能」横幅的去重闸门：NANZI_SKILL_CREATED 标记会随消息历史长期存在，
+// 而下面的 watch 在每次 messages 变化（发消息 / 流式回复 / 刷新加载历史 / 切回会话）
+// 时都会重扫整段历史；不去重就会反复弹出，且用户关闭后立刻又出现。
+const skillNotifyGate = createSkillNotifyGate(() => conversationId.value);
+
+watch(
+  () =>
+    messages.value
+      .map((m) =>
+        [
+          m.content || "",
+          ...((m.logs || []).map((log: any) => String(log.details || ""))),
+        ].join("\n"),
+      )
+      .join("\n---\n"),
+  (blob) => {
+    const info = parseLatestSkillCreatedMarker(blob);
+    if (!info || info.scope !== "personal") return;
+    if (!skillNotifyGate.shouldNotify(info.skill_id, info.action)) return;
+    skillCreatedInfo.value = info;
+  },
+);
+
+const dismissCreatedSkill = () => {
+  if (skillCreatedInfo.value) {
+    skillNotifyGate.mark(skillCreatedInfo.value.skill_id, skillCreatedInfo.value.action);
+  }
+  skillCreatedInfo.value = null;
+};
+
+const mountCreatedSkill = () => {
+  if (!skillCreatedInfo.value) return;
+  handleSelectSkill({
+    id: skillCreatedInfo.value.skill_id,
+    name: skillCreatedInfo.value.name,
+    description: "",
+    scope: skillCreatedInfo.value.scope,
+  });
+  skillCreatedInfo.value = null;
+};
+
+const handleSelectSkill = (skill: any) => {
+  if (!chatInputRef.value) return;
+  const scope = skill.scope === "personal" ? "personal" : "global";
+  chatInputRef.value.uploadedFiles.push({
+    type: "skill",
+    url: skill.id,
+    filename: `${skill.name} (技能)`,
+    size: 0,
+    ext: "skill",
+    scope,
+    skillMeta: {
+      id: skill.id,
+      name: skill.name,
+      description: skill.description || "",
+      scope,
+    },
+  });
+};
+
+const openMemorySelector = () => {
+  showMemoryDrawer.value = true;
+};
+
+const handleMemoryMount = (memory: {
+  conversation_id: string;
+  summary: string;
+  last_active?: number;
+}) => {
+  if (!chatInputRef.value) return;
+  const files = chatInputRef.value.uploadedFiles || [];
+  const memFile = files.find((f: any) => f.type === "memory");
+  const existingIds = memFile?.url
+    ? String(memFile.url).split(",").map((id) => id.trim()).filter(Boolean)
+    : [];
+  if (existingIds.includes(memory.conversation_id)) return;
+  const existingMeta = memFile?.memoryMeta || [];
+  const newIds = [...existingIds, memory.conversation_id];
+  const newMeta = [
+    ...existingMeta,
+    {
+      conversation_id: memory.conversation_id,
+      summary: memory.summary,
+      last_active: memory.last_active,
+    },
+  ];
+  chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "memory");
+  chatInputRef.value.uploadedFiles.push({
+    type: "memory",
+    url: newIds.join(","),
+    filename: `已选择 ${newIds.length} 条记忆记录`,
+    size: 0,
+    ext: "memory",
+    memoryMeta: newMeta,
+  });
+};
+
+const handleMemoryCleared = (payload: { conversationIds: string[]; all?: boolean }) => {
+  if (!chatInputRef.value) return;
+  const files = chatInputRef.value.uploadedFiles || [];
+  const memFile = files.find((f: any) => f.type === "memory");
+  if (!memFile?.url) return;
+  if (payload.all) {
+    chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "memory");
+    return;
+  }
+  const remainingIds = String(memFile.url)
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id && !payload.conversationIds.includes(id));
+  const remainingMeta = (memFile.memoryMeta || []).filter(
+    (m: { conversation_id: string }) => !payload.conversationIds.includes(m.conversation_id),
+  );
+  chatInputRef.value.uploadedFiles = files.filter((f: any) => f.type !== "memory");
+  if (remainingIds.length > 0) {
+    chatInputRef.value.uploadedFiles.push({
+      ...memFile,
+      url: remainingIds.join(","),
+      filename: `已选择 ${remainingIds.length} 条记忆记录`,
+      memoryMeta: remainingMeta,
+    });
+  }
+};
+
+
+/** 聊天作用域候选（GET /api/portal/models?scope=chat，后端已按白名单收窄；未配置白名单 = 全量） */
+const chatScopedModels = ref<AIModel[]>([]);
+/** 既有 UI 使用的候选：只保留可聊天的 llm / multimodal */
+const availableModels = ref<AIModel[]>([]);
+/** 版本开关 × 白名单候选 → 切换器可见性、候选与空态提示（设计 §4.8） */
+const chatModelSwitch = computed(() =>
+  resolveChatModelSwitch({
+    versionAllowsSwitch: manualModelSwitchAllowed.value,
+    chatModels: availableModels.value,
+  }),
+);
+/**
+ * 传给 ChatInput 的候选：字段名以组件 props 的 ModelOption 为准（model_id / name / type …）。
+ * 以完整 AIModel 为基底，保留思考、温度等配置。
+ */
+const chatInputModelOptions = computed(() =>
+  chatModelSwitch.value.options.map((option) => {
+    const matched = availableModels.value.find((model) => model.model_id === option.value);
+    return {
+      ...(matched || { model_id: option.value, type: "" }),
+      model_id: option.value,
+      name: matched?.name || option.label,
+    };
+  }),
+);
+/** 清掉本机模型覆盖，回落到智能体默认模型（越权被拒 / 覆盖已不在候选里时调用） */
+const clearLocalModelOverride = () => {
+  config.overrideModel = "";
+  localStorage.removeItem("yovole_override_model");
+};
+/** 候选是否已可用于判断「残留覆盖」：模型列表与智能体信息都已到位，避免误清用户的选择 */
+const chatModelCandidatesReady = computed(() => {
+  if (chatScopedModels.value.length === 0) return false;
+  const id = String(effectiveEmbedChatAgentId.value || "");
+  if (id && !effectiveChatAgent.value) return false;
+  return true;
+});
+// 设计 §4.8 第 3 条：当前覆盖已不在候选里（白名单收窄、智能体切换、模型被停用）时，
+// 清掉本机覆盖并回落到智能体默认模型。只在候选就绪且切换器可见时判断：
+// 「候选 ≤1」与「并集为空」两种隐藏态交给 403 兜底，避免无声撤销用户的唯一选择。
+watch([chatModelSwitch, chatModelCandidatesReady], () => {
+  if (!chatModelCandidatesReady.value || !manualModelSwitchAllowed.value) return;
+  if (!chatModelSwitch.value.visible) return;
+  const current = String(config.overrideModel || "");
+  if (current && !chatModelSwitch.value.options.some((option) => option.value === current)) {
+    clearLocalModelOverride();
+  }
+});
+const currentUser = ref<any>(null);
+const accountInfo = ref<any>(null); // System account info from /me
+const showShortcutsHint = ref(false);
+let shortcutsHintTimer: ReturnType<typeof setTimeout> | null = null;
+
+const dismissShortcutsHint = () => {
+  showShortcutsHint.value = false;
+  if (shortcutsHintTimer) {
+    clearTimeout(shortcutsHintTimer);
+    shortcutsHintTimer = null;
+  }
+};
+
+const triggerShortcutsHint = () => {
+  showShortcutsHint.value = true;
+  if (shortcutsHintTimer) clearTimeout(shortcutsHintTimer);
+  shortcutsHintTimer = setTimeout(() => {
+    showShortcutsHint.value = false;
+    shortcutsHintTimer = null;
+  }, 4500);
+};
+
+const toggleShortcuts = () => {
+  config.showShortcuts = !config.showShortcuts;
+  saveRoutingSettings();
+  if (config.showShortcuts) {
+    dismissShortcutsHint();
+    fetchSlashCommands();
+  } else {
+    triggerShortcutsHint();
+  }
+};
+
+const handleHeaderShortcutsClick = () => {
+  dismissShortcutsHint();
+  if (isMobile.value) {
+    fetchSlashCommands();
+    chatInputRef.value?.openCommandDrawer?.();
+    return;
+  }
+  toggleShortcuts();
+};
+const isFullScreen = ref(false);
+const toggleFullScreen = () => {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(err => {
+      console.error(`Error attempting to enable full-screen mode: ${err.message}`);
+    });
+  } else {
+    document.exitFullscreen();
+  }
+};
+const updateFullScreenStatus = () => {
+  isFullScreen.value = !!document.fullscreenElement;
+};
+
+// —— 移动端操作抽屉（<640px 专用）：一个抽屉、两个入口 ——
+const mobileActionsMessageId = ref<string | null>(null);
+const mobileActionsFocus = ref<"data" | null>(null);
+
+const openMobileActions = (msg: Message, focus: "data" | null) => {
+  mobileActionsMessageId.value = msg.id;
+  mobileActionsFocus.value = focus;
+};
+const closeMobileActions = () => {
+  mobileActionsMessageId.value = null;
+  mobileActionsFocus.value = null;
+};
+
+// 移动端头部「更多」弹层：快捷指令 / 帮助 / 服务端浏览器收纳于此。
+// 形态与输入区「+」弹层一致（锚定在被点按钮下方），不用底部抽屉。
+// 桌面端（≥640px）这些入口仍直接显示在头部，本状态恒为 false。
+// 定义位置必须在 updateWidth 之前——updateWidth 在挂载时即被调用，否则会踩 const 的 TDZ。
+const showHeaderMore = ref(false);
+const headerMoreRef = ref<HTMLElement | null>(null);
+/** 弹层里是否存在「值得提示」的状态：给「更多」按钮加小绿点，避免收起后状态不可见。 */
+const headerMoreBadge = computed(() => browserPanelVisible.value || Boolean(config.enableGrounding));
+const toggleHeaderMore = () => {
+  showHeaderMore.value = !showHeaderMore.value;
+};
+const closeHeaderMore = () => {
+  showHeaderMore.value = false;
+};
+
+// 弹层内的动作一律「先关弹层、再触发原动作」：否则 modal / 侧栏会叠在弹层之上，观感割裂。
+const runHeaderMoreSettings = () => {
+  closeHeaderMore();
+  showSettings.value = true;
+};
+const runHeaderMoreShortcuts = () => {
+  closeHeaderMore();
+  handleHeaderShortcutsClick();
+};
+const runHeaderMoreHelp = () => {
+  closeHeaderMore();
+  showHelpModal.value = true;
+};
+const runHeaderMoreBrowser = () => {
+  closeHeaderMore();
+  toggleBrowserPanel();
+};
+// 移动端「进行中的会话」：顶部栏放不下，收进「更多」后用 modal 变体展示。
+const runHeaderMoreActiveRuns = () => {
+  showHeaderMore.value = false;
+  showActiveRuns.value = true;
+};
+// 「我的账号」：跳 /embed/personal。它与 /embed/chat 同 layout、同为 public，
+// 在 iframe / 小程序 web-view 内可直接做 SPA 内切换，不需要走 postMessageToHost。
+// 注意**不能**跳 /dashboard/personal——那是门户路由，嵌入场景下会被守卫拦到登录页。
+const runHeaderMoreAccount = () => {
+  closeHeaderMore();
+  router.push({ name: "EmbedPersonal" });
+};
+
+// 点弹层外部关闭（与 ChatInput 的「+」弹层同做法：document 全局监听 + contains 判定）。
+// 不额外加 @click.stop：按钮本身在容器内，contains 判定会放过它，toggle 行为不受影响。
+const handleHeaderMoreGlobalClick = (event: MouseEvent) => {
+  if (showHeaderMore.value && headerMoreRef.value && !headerMoreRef.value.contains(event.target as Node)) {
+    showHeaderMore.value = false;
+  }
+  if (showActiveRuns.value && activeRunsRef.value && !activeRunsRef.value.contains(event.target as Node)) {
+    showActiveRuns.value = false;
+  }
+};
+onMounted(() => document.addEventListener('click', handleHeaderMoreGlobalClick));
+onUnmounted(() => document.removeEventListener('click', handleHeaderMoreGlobalClick));
+
+/** 本条消息是否带数据 / 文件徽标（与「▤ 数据」按钮上两个徽标同条件）。 */
+const hasMessageDataBadge = (msg: Message): boolean =>
+  currentMessageReusableCount(msg) > 0 || Boolean(msg.trace_id && artifactCount(msg.trace_id) > 0);
+
+/** 本条消息是否有 token 统计（与桌面「用量」按钮同条件，决定「查看调用详情」弹层有没有内容）。 */
+const hasMessageTokenStats = (msg: Message): boolean =>
+  msg.prompt_tokens !== undefined || msg.completion_tokens !== undefined || msg.total_tokens !== undefined;
+
+/** 「▤ 数据」该不该进操作抽屉：有数据 / 文件徽标，或连调用统计都没有（抽屉里至少还有会话级数据入口）。 */
+const shouldOpenMobileDataSheet = (msg: Message): boolean =>
+  hasMessageDataBadge(msg) || !hasMessageTokenStats(msg);
+
+/** 「▤ 数据」点击分派：其余情况退回「查看调用详情」，避免点开一个没有数据可看的空抽屉。 */
+const handleMobileDataClick = (msg: Message) => {
+  if (shouldOpenMobileDataSheet(msg)) {
+    openMobileActions(msg, "data");
+    return;
+  }
+  openModelCallStats(msg);
+};
+
+/** 与 handleMobileDataClick 同源，保证「说的」和「做的」一致。 */
+const mobileDataAriaLabel = (msg: Message): string =>
+  shouldOpenMobileDataSheet(msg) ? "查看本会话的数据和文件" : "查看本次调用详情";
+
+/** 抽屉里至少有一组内容时，「⋯ 更多」才出现（对齐桌面 MessageActionMenus 的 hasMore 语义）。 */
+const hasMobileSheetContent = (msg: Message): boolean =>
+  Boolean(
+    hasConversationDataFile.value ||
+      msg.chatbiInsight?.actions?.length ||
+      (checkRole(msg, "agent") &&
+        isGeneralAgentMessage(msg) &&
+        !msg.chatbiInsight?.actions?.length &&
+        !msg.isThinking &&
+        visibleStreamBody(msg)) ||
+      msg.trace_id ||
+      msg.prompt_tokens !== undefined ||
+      msg.completion_tokens !== undefined ||
+      (canSaveGoldenReportFromMessage(msg) && checkRole(msg, "agent") && !msg.isThinking)
+  );
+
+/** ChatBI 追问分派：local_action 需要原始 action，其余走查询追问（与 ChatBIContinueAnalysis 内部一致）。 */
+const handleSheetChatbiAction = (action: ChatBIInsightAction, msg: Message) => {
+  if (action.action_type === "local_action") {
+    handleChatBIResultAction({ ...action, result_id: action.result_id || msg.chatbiInsight?.result_id }, msg);
+    return;
+  }
+  handleChatBIContinueSelect(action.query);
+};
+
+const windowWidth = ref(window.innerWidth);
+const isMobile = computed(() => windowWidth.value < 640);
+const updateWidth = () => {
+  const wasMobile = isMobile.value;
+  windowWidth.value = window.innerWidth;
+  // 跨过 640px 断点时必须收起抽屉，否则状态会悬空
+  if (wasMobile !== isMobile.value) {
+    closeMobileActions();
+    closeHeaderMore();
+  }
+  // Inject device context
+  injectedContext.value = {
+    ...injectedContext.value,
+    device_type: isMobile.value ? '移动端(小屏幕)' : '桌面端(大屏幕)',
+    display_hint: isMobile.value ? '窄屏排版优化' : '宽屏详尽展示'
+  };
+};
+const showAddModal = ref(false);
+const newCommand = reactive({
+  label: "",
+  command: "",
+  sort_order: 10,
+});
+const addCommand = async () => {
+  if (!newCommand.label || !newCommand.command) return;
+  try {
+    const username = currentUser.value?.user_name || "unknown";
+    await axios.post("/api/portal/slash-commands/", {
+      ...newCommand,
+      created_by: username
+    });
+    await fetchSlashCommands();
+    showAddModal.value = false;
+    newCommand.label = "";
+    newCommand.command = "";
+  } catch (e) {
+    console.error("Failed to add command", e);
+  }
+};
+// --- PostMessage Protocol ---
+const postMessageToHost = (payload: any) => {
+  if (config.instanceId) {
+    payload.instance_id = config.instanceId;
+  }
+  window.parent?.postMessage(
+    {
+      source: "nanzi-agent-embed",
+      ...payload,
+    },
+    "*"
+  );
+};
+const savedReportFocusRequest = ref<{
+  report_id: string;
+  run_id: string;
+  request_id: string;
+  detail_tab?: "info" | "runs" | "subscription";
+  run_now?: boolean;
+} | null>(null);
+let savedReportFocusSequence = 0;
+const openSavedReportFromHost = (target: any) => {
+  if (!target?.report_id) return;
+  const requestId = String(
+    target.request_id || `embed-report-${Date.now().toString(36)}-${++savedReportFocusSequence}`,
+  );
+  if (savedReportFocusRequest.value?.request_id === requestId) return;
+  savedReportFocusRequest.value = {
+    report_id: String(target.report_id),
+    run_id: String(target.run_id || ""),
+    request_id: requestId,
+    ...(target.detail_tab ? { detail_tab: target.detail_tab } : {}),
+    ...(target.run_now ? { run_now: true } : {}),
+  };
+  setTimeout(() => openPortalDrawer(), 0);
+};
+const applyInitConfigPayload = (data: Record<string, any>) => {
+  void loadWorkbenchHome();
+  const incomingInstanceId = normalizeEmbedInstanceId(data.instance_id);
+  const instanceChanged = Boolean(incomingInstanceId) && incomingInstanceId !== config.instanceId;
+  if (incomingInstanceId) config.instanceId = incomingInstanceId;
+  if (instanceChanged) {
+    requestedConversationId = "";
+    conversationId.value = "";
+    messages.value = [];
+    resourceScope.value = emptyResourceScopeState();
+    // 实例已换：上一个实例待提交的收尾不能再发，服务端会按新实例的上下文处理它。
+    cancelPendingConversationFinalize();
+    historyRequestSequence += 1;
+    historyAbortController?.abort();
+    historyAbortController = null;
+    historyAdoptionAbortController?.abort();
+    historyAdoptionAbortController = null;
+    historyLoadingConversationId = "";
+    historyOffset.value = 0;
+    hasMoreHistory.value = true;
+    isLoadingHistory.value = false;
+  }
+  if (data.agent_id) {
+    const agentId = String(data.agent_id);
+    applyIntegrationAgentLock(agentId);
+    void loadWelcomeCards(agentId);
+    if (!data.conversation_id) {
+      messages.value = [];
+      generateNewConversation();
+      requestedConversationId = conversationId.value;
+    }
+  }
+  if (data.conversation_id) {
+    // 宿主下发的会话 ID 只登记为「待采用」，**不写内存、不持久化**：它还没过归属校验，
+    // 直接持久化会把它写进当前身份的桶、覆盖本人原有的续接记录；直接采用会让界面在
+    // 校验完成前短暂停在一个可能属于他人的会话上。真正的采用在 initChat 校验通过后完成。
+    requestedConversationId = String(data.conversation_id);
+  } else if (!data.agent_id) {
+    requestedConversationId = "";
+  }
+  if (data.theme) applyTheme(data.theme, data.styleVars);
+  if (data.welcome_message_override) {
+    welcomeMessageFromHost = String(data.welcome_message_override);
+    config.welcomeMessage = welcomeMessageFromHost;
+  }
+  if (data.user_avatar) config.userAvatar = data.user_avatar;
+  if (data.agent_avatar) config.agentAvatar = data.agent_avatar;
+  if (data.business_context) mergeBusinessContext(data.business_context);
+  if (data.page_info) {
+    mergeBusinessContext(data.page_info);
+  }
+  openSavedReportFromHost(data.open_saved_report);
+  if (data.portal_question?.query) {
+    setTimeout(
+      () =>
+        handlePortalQuickQuestion(
+          String(data.portal_question.query),
+          data.portal_question.action === "fill" ? "fill" : "send",
+        ),
+      0,
+    );
+  }
+};
+
+/** ticket 兑换失败的具体原因，供失败界面区分文案。
+ *
+ * - `origin_not_allowed`：403，来源不被该票的 `allowed_origins` 允许。这是**可修复**的
+ *   接入配置问题（调整白名单或换用受信来源重试），票据在后端已不再被消耗。
+ * - `ticket_invalid`：400/网络异常，票不存在、已过期或已被使用，需要重新签发。
+ *
+ * 两者此前共用同一句「该凭证为一次性使用…」，把「域名白名单不匹配」误报成「票被用过了」，
+ * 直接把排查方向带偏。
+ */
+const ticketExchangeFailureReason = ref<"" | "origin_not_allowed" | "ticket_invalid">("");
+
+/** 把 ticket 兑换的失败原因映射为界面/宿主可区分的失败原因。
+ *
+ * 403（来源不匹配）与 400（票已失效）是完全不同的故障：前者改配置就能好，后者必须重签。
+ */
+const resolveTicketFailureReason = (): AuthFailureReason =>
+  ticketExchangeFailureReason.value === "origin_not_allowed"
+    ? "origin_not_allowed"
+    : "invalid_ticket";
+
+const exchangeTicketAndApply = async (ticket: string): Promise<boolean> => {
+  ticketExchangeFailureReason.value = "";
+  try {
+    const res = await axios.post("/api/v1/embed/tickets/exchange", { ticket: ticket.trim() });
+    if (res.data && res.data.code === 200 && res.data.data?.session_token) {
+      const sessionData = res.data.data;
+      // 走统一入口：既设置内存中的 config.token 与 axios 默认头，也把会话令牌持久化到
+      // 本 tab 的 sessionStorage——ticket 是一次性的，能撑住刷新的只有这个会话令牌。
+      syncValidatedCredentials(sessionData.session_token);
+      if (sessionData.user_info) {
+        currentUser.value = {
+          ...currentUser.value,
+          ...sessionData.user_info,
+        };
+      }
+      if (sessionData.agent_id) {
+        urlPinnedAgentKey.value = sessionData.agent_id;
+        applyIntegrationAgentLock(sessionData.agent_id);
+      }
+      lastSessionCookieIssued.value = true;
+      return true;
+    }
+    // 2xx 但业务码非 200：按「票不可用」处理
+    ticketExchangeFailureReason.value = "ticket_invalid";
+    return false;
+  } catch (err) {
+    // 403 = 来源不被 allowed_origins 允许；其余（400 等）= 票已失效/已被使用
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    ticketExchangeFailureReason.value = status === 403 ? "origin_not_allowed" : "ticket_invalid";
+    console.error("[EmbedTicket] Failed to exchange ticket:", err);
+    return false;
+  }
+};
+
+/** 同一张 ticket 的并发/重复兑换去重。
+ *
+ * URL `?ticket=` 与宿主经 postMessage 下发的 ticket 可能**同时**到达（宿主通常会在收到
+ * NANZI_WIDGET_READY 后回传 ticket），而 ticket 是一次性的（后端 GETDEL 原子核销），
+ * 并发兑换必然有一方失败，失败方还会无条件上报 INIT_FAILURE，表现为随机弹「凭证已失效」。
+ * 这里让同一 ticket 复用同一次兑换结果：飞行中共享 Promise，已成功的直接返回成功。
+ */
+const inflightTicketExchanges = new Map<string, Promise<boolean>>();
+const consumedTicketValues = new Set<string>();
+const exchangeTicketOnce = (ticket: string): Promise<boolean> => {
+  const key = (ticket || "").trim();
+  if (!key) return Promise.resolve(false);
+  if (consumedTicketValues.has(key)) return Promise.resolve(true);
+  const existing = inflightTicketExchanges.get(key);
+  if (existing) return existing;
+
+  const pending = exchangeTicketAndApply(key)
+    .then((ok) => {
+      if (ok) consumedTicketValues.add(key);
+      return ok;
+    })
+    .finally(() => {
+      inflightTicketExchanges.delete(key);
+    });
+  inflightTicketExchanges.set(key, pending);
+  return pending;
+};
+
+const postInitSuccess = () => {
+  postMessageToHost({
+    type: "INIT_SUCCESS",
+    user: {
+      user_name: currentUser.value?.user_name || undefined,
+      real_name: currentUser.value?.real_name || undefined,
+      user_id: currentUser.value?.user_id || undefined,
+      role: currentUser.value?.role || undefined,
+    },
+  });
+};
+
+const handleInitConfig = async (data: Record<string, any>) => {
+  // 立刻置位：用于取消 URL / Cookie 初始化的待发计时器，避免它们与本次 INIT_CONFIG 抢着认证。
+  initConfigReceived.value = true;
+  // 但**等待态不能随之关闭**：凭据此刻尚未核销/校验完成，而 hasPermission 仍是初始化前
+  // 那次必然失败的校验留下的 false。若在此关闭等待态，换票的网络往返期间就会闪出一帧红色
+  // 「登录状态已失效」——即"点发送 INIT_CONFIG 后瞬间闪红"的成因。
+  hostInitInFlight.value = true;
+  try {
+    await applyHostInitConfig(data);
+  } finally {
+    hostInitInFlight.value = false;
+  }
+};
+
+const applyHostInitConfig = async (data: Record<string, any>) => {
+  conversationInitializationGeneration += 1;
+  cancelPendingUrlTokenInitialization();
+  const logData = { ...data };
+  delete logData.user_info;
+  delete logData.user;
+  console.log(
+    "Received INIT_CONFIG payload:",
+    JSON.stringify({
+      ...logData,
+      ticket: logData.ticket ? "***" : undefined,
+      token: logData.token ? "***" : "MISSING",
+      api_key: logData.api_key ? "***" : "MISSING",
+      apikey: logData.apikey ? "***" : "MISSING",
+    }),
+  );
+  const strict = data.strict_token === true;
+  if (strict) {
+    strictTokenValidation.value = true;
+  }
+
+  // 1. 优先使用临时 Ticket 换票
+  if (data.ticket) {
+    const ticketOk = await exchangeTicketOnce(String(data.ticket));
+    if (!ticketOk) {
+      authFailureReason.value = resolveTicketFailureReason();
+      hasPermission.value = false;
+      postMessageToHost({ type: "INIT_FAILURE", reason: authFailureReason.value });
+      return;
+    }
+    hasPermission.value = true;
+    // 会话令牌已随兑换落地到本 tab，URL 里的 ticket 已核销且不再需要，可安全清除
+    maybeStripUrlAfterSessionReady();
+    applyInitConfigPayload(data);
+    postInitSuccess();
+    await initChat({ skipAuth: true });
+    return;
+  }
+
+  // 2. 兼容传统的 API Key 模式
+  const incomingToken = data.token || data.api_key || data.apikey;
+  if (!incomingToken) {
+    if (strict) {
+      // 调试台的 strict_token 模式要求显式传入 token，不允许回落到 Cookie
+      console.warn("INIT_CONFIG received in strict mode but no token/api_key/ticket found!");
+      authFailureReason.value = "missing_token";
+      hasPermission.value = false;
+      postMessageToHost({ type: "INIT_FAILURE", reason: "missing_token" });
+      return;
+    }
+    // 门户内嵌场景（Chat.vue 的同源 iframe）不再向子页下发凭据：会话凭据位于 HttpOnly
+    // Cookie，JS 既读不到也无法经 postMessage 传递。这里照常下发初始化配置，认证交由
+    // validateToken 的同源 Cookie 分支完成——否则子页会因 return 而永远停在骨架屏。
+    console.log("[Auth] INIT_CONFIG without token; falling back to same-origin session cookie.");
+    applyInitConfigPayload(data);
+    postInitSuccess();
+    await initChat();
+    return;
+  }
+  config.token = incomingToken;
+  axios.defaults.headers.common["Authorization"] = `Bearer ${incomingToken}`;
+  axios.defaults.headers.common["X-API-Key"] = incomingToken;
+
+  if (strict) {
+    const isValid = await validateToken({ strict: true });
+    if (!isValid) {
+      authFailureReason.value = "invalid_token";
+      hasPermission.value = false;
+      postMessageToHost({ type: "INIT_FAILURE", reason: "invalid_token" });
+      return;
+    }
+    hasPermission.value = true;
+    applyInitConfigPayload(data);
+    postInitSuccess();
+    await initChat({ skipAuth: true });
+    return;
+  }
+
+  hasPermission.value = true;
+  applyInitConfigPayload(data);
+  postInitSuccess();
+  initChat();
+};
+const handlePostMessage = (event: MessageEvent) => {
+  // Security check logic here in production
+  const data = event.data;
+  const messageInstanceId = normalizeEmbedInstanceId(data.instance_id);
+  if (
+    messageInstanceId &&
+    config.instanceId &&
+    messageInstanceId !== config.instanceId
+  ) {
+    return; // Ignore messages for other instances
+  }
+  switch (data.type) {
+    case "INIT_CONFIG":
+      void handleInitConfig(data);
+      break;
+    case "OPEN_SAVED_REPORT":
+      openSavedReportFromHost(data.open_saved_report);
+      break;
+    case "SYNC_STATE":
+      // Host syncing page state (e.g. current URL, selected item)
+      if (data.payload) {
+        mergeBusinessContext(data.payload);
+        console.log("State synced from host:", injectedContext.value.business_context);
+      }
+      break;
+    case "UPDATE_CONTEXT":
+      const newContext = data.payload || data.context;
+      if (newContext) {
+        mergeBusinessContext(newContext);
+        console.log("Context updated:", injectedContext.value.business_context);
+      }
+      break;
+    case "SET_THEME":
+      applyTheme(data.theme, data.styleVars);
+      break;
+    case "STOP_GENERATION":
+      stopGeneration();
+      postMessageToHost({ type: "GENERATION_STOPPED" });
+      break;
+    case "CLEAR_SESSION":
+      resetSession();
+      break;
+    case "RESET_SESSION":
+      void resetSession(data.new_token || data.token, data.ticket);
+      break;
+    case "SEND_COMMAND":
+      if (data.command) {
+        handleQuickQuestion(data.command);
+      }
+      break;
+  }
+};
+const applyTheme = (theme: string, styleVars?: Record<string, string>) => {
+  const root = document.documentElement;
+  // 状态与 class 必须同源：宿主 postMessage（SET_THEME）和服务端配置都会直接调
+  // 这里、绕过 setTheme。不同步 config.theme 的话，设置面板的选中态会和页面实际
+  // 渲染的主题脱钩——显示「深色」高亮、页面却按浅色渲染。
+  config.theme = theme;
+  if (theme === "dark") {
+    root.classList.add("dark");
+  } else {
+    root.classList.remove("dark");
+  }
+  if (styleVars) {
+    Object.entries(styleVars).forEach(([key, value]) => {
+      root.style.setProperty(key, value);
+    });
+  }
+};
+// 「状态 → class」的声明式兜底。
+// applyTheme 是命令式入口，而它历史上有多条调用路径（宿主 postMessage、服务端配置、
+// URL query）；只要有一条路径只改了状态、或 class 被别处覆盖，页面就会停在「深色状态
+// + 浅色底」的错位画面——Tailwind 的 dark: 变体是 `:is(.dark *)` **后代**选择器，根
+// 容器自己的深色背景恰恰依赖 <html> 上有 .dark 祖先，没有它就只有子元素变浅、底色仍白，
+// 也就是用户看到的「一片白雾、内容隐约可见」。这里把映射钉成单向：config.theme 是唯一
+// 事实源，<html>.dark 永远跟随，任何路径改了状态都会重新对齐。
+watch(
+  () => config.theme,
+  (theme) => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+  },
+  { immediate: true },
+);
+const resetSession = async (newToken?: string, ticket?: string) => {
+  // 生成中点「新会话」时，先把上一轮在途生成停干净：否则旧流回调会把内容写进新会话，
+  // isProcessing / remoteRunBusy 残留也会让新会话的输入框一直锁着。
+  resetConversationScopedState();
+  messages.value = [];
+  config.enableGrounding = false; // 新会话恢复默认关闭
+  generateNewConversation();
+  if (ticket) {
+    const ticketOk = await exchangeTicketOnce(ticket);
+    if (!ticketOk) {
+      authFailureReason.value = resolveTicketFailureReason();
+      hasPermission.value = false;
+      postMessageToHost({ type: "INIT_FAILURE", reason: authFailureReason.value });
+      return;
+    }
+    hasPermission.value = true;
+    maybeStripUrlAfterSessionReady();
+  } else if (newToken) {
+    // 走统一入口，顺带把新凭据持久化到本 tab（与 ticket 路径行为一致）
+    syncValidatedCredentials(newToken);
+  }
+  initChat();
+  // 通知门户父页去掉 URL 中的 conversation_id，避免再次 INIT 或刷新又钉回旧会话
+  postMessageToHost({
+    type: "CONVERSATION_CHANGED",
+    conversation_id: conversationId.value,
+    clear_host_conversation_pin: true,
+  });
+};
+// 开始新对话。当前内容本来就会保存进历史，所以不再弹确认框——多一次点击只是阻力。
+const startNewConversation = () => {
+  resetSession();
+  nextTick(() => {
+    if (!isMobile.value) {
+      chatInputRef.value?.focus();
+    }
+  });
+};
+const fetchSlashCommands = async () => {
+  try {
+    const headers: any = {};
+    if (config.token) {
+      headers["Authorization"] = `Bearer ${config.token}`;
+      headers["X-API-Key"] = config.token;
+    }
+    // 并行获取 RAGFlow 配置和快捷指令
+    const [configRes, res] = await Promise.all([
+      axios.get("/api/portal/ragflow/config", { headers }).catch(e => {
+        console.warn("Failed to fetch ragflow config", e);
+        return null;
+      }),
+      axios.get("/api/portal/slash-commands/", { headers }).catch(e => {
+        console.warn("Failed to fetch user slash-commands", e);
+        return { data: null };
+      })
+    ]);
+
+    if (configRes && configRes.data?.data) {
+      isKnowledgeEnabled.value = configRes.data.data.knowledge_base_enabled !== false;
+    } else {
+      isKnowledgeEnabled.value = true;
+    }
+
+    const sysCommands = SYSTEM_SLASH_COMMANDS.map(cmd => {
+      if (cmd.id === KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID) {
+        return {
+          ...cmd,
+          disabled: !isKnowledgeEnabled.value
+        };
+      }
+      return cmd;
+    });
+
+    if (res.data) {
+      // 获取用户命令
+      const userCommands = Array.isArray(res.data) ? res.data : [];
+      // 合并系统命令和用户命令，并按 sort_order 排序
+      slashCommands.value = [
+        ...sysCommands,
+        ...userCommands
+      ].sort((a, b) => (a.sort_order || 999) - (b.sort_order || 999));
+    } else {
+      slashCommands.value = [...sysCommands];
+    }
+  } catch (e) {
+    console.warn("Slash commands fetch failed", e);
+    const sysCommands = SYSTEM_SLASH_COMMANDS.map(cmd => {
+      if (cmd.id === KNOWLEDGE_PORTAL_SYSTEM_COMMAND_ID) {
+        return {
+          ...cmd,
+          disabled: !isKnowledgeEnabled.value
+        };
+      }
+      return cmd;
+    });
+    slashCommands.value = [...sysCommands];
+  }
+};
+const fetchModels = async () => {
+  try {
+    // 聊天场景走 scope=chat：非管理员按模型白名单收窄（未配置白名单 = 全量，行为与今天一致）
+    const res = await modelApi.listAvailableForChat();
+    if (res.data) {
+      chatScopedModels.value = res.data.filter((m) => m.is_active);
+      availableModels.value = chatScopedModels.value.filter(
+        (m) => m.type === "llm" || m.type === "multimodal"
+      );
+    }
+  } catch (e) {
+    console.error("Failed to fetch models", e);
+  }
+};
+const fetchAccountInfo = async () => {
+  // Placeholder for future use (e.g., wallet, balance, user profile)
+  return;
+};
+// State
+const hasPermission = ref(true); // Default to true, strictly controlled by validateToken
+
+/** 认证失败原因，决定「无访问权限」遮罩展示哪种提示。
+ *
+ * 原先该遮罩只有一句硬编码的「认证失败，请检查您的账号是否有权限访问！」，无论失败
+ * 原因是什么都显示它。对最常见的 Ticket 一次性核销场景（用户只是按了 F5）这是**误导**：
+ * ticket 已被 `GETDEL` 原子核销，用户去检查账号权限、改角色配置都**不可能解决**，
+ * 真正该做的是回到宿主系统重新进入。这里按真实原因分派文案，每条都给出下一步动作。
+ */
+type AuthFailureReason =
+  | "invalid_ticket"
+  | "origin_not_allowed"
+  | "missing_token"
+  | "invalid_token"
+  | "no_session"
+  | "";
+
+const authFailureReason = ref<AuthFailureReason>("");
+
+/** 失败提示的展示映射；空原因回落到通用文案，避免未覆盖路径没有提示。 */
+const authFailureView = computed<{ title: string; message: string }>(() => {
+  switch (authFailureReason.value) {
+    case "invalid_ticket":
+      return {
+        title: "接入凭证已失效",
+        message:
+          "该凭证为一次性使用，页面刷新或重复打开后即失效。请返回原系统重新进入。",
+      };
+    case "origin_not_allowed":
+      // 与「票已失效」彻底区分开：来源不匹配是**可修复**的接入配置问题，
+      // 此前两者共用同一句文案，会把「域名白名单没配对」误导成「票被别人用过了」。
+      return {
+        title: "当前来源未被允许",
+        message:
+          "本次签发的凭证限定了可嵌入的宿主域名，当前页面来源不在白名单内。请联系原系统核对 allowed_origins 与访问地址是否一致（需包含协议与端口）。",
+      };
+    case "missing_token":
+      return {
+        title: "缺少访问凭证",
+        message: "未收到访问凭证，请通过原系统提供的入口打开本页面。",
+      };
+    case "invalid_token":
+      return {
+        title: "访问凭证无效",
+        message: "密钥无效或已过期，请联系管理员确认接入配置。",
+      };
+    case "no_session":
+      return {
+        title: "登录状态已失效",
+        // 嵌入场景用户没有平台登录入口，不能只说「请重新登录」；给出刷新与回宿主的动作。
+        // 跨站 iframe 中 Cookie 不发送时也会落到这里，回宿主重进才是有效路径。
+        message: "当前会话已失效或无法在本页生效，请刷新重试；仍无法进入请联系原系统重新打开。",
+      };
+    default:
+      return {
+        title: "无访问权限",
+        message: "认证失败，请检查您的账号是否有权限访问！",
+      };
+  }
+});
+/** 调试台 strict_token 模式：仅校验 INIT_CONFIG 传入的 token，不走 localStorage / Cookie 兜底。 */
+const strictTokenValidation = ref(false);
+
+/** 宿主 INIT_CONFIG 触发的凭据核销/校验是否仍在途。
+ *
+ * 收到 INIT_CONFIG 时会立刻置 `initConfigReceived`（用于取消 URL/Cookie 的待发计时器），
+ * 但**此刻凭据尚未落定**，而 `hasPermission` 还是初始化前那次必然失败的校验留下的 false。
+ * 若等待态只依据 `initConfigReceived`，换票的网络往返期间就会闪出红色失效遮罩。
+ */
+const hostInitInFlight = ref(false);
+
+/** 严格模式下，宿主尚未下发凭据（或凭据仍在核销中）的过渡态。
+ *
+ * 为什么需要单独一个状态：调试台用 `?strict_token=1` 载入 iframe 且**不带任何凭据**，
+ * 组件会在 250ms 握手窗口后立即发起校验，而 strict 模式恰好禁掉了 Cookie 兜底，因此
+ * 首次校验**必然失败**。若把"还没收到宿主凭据"直接渲染成红色的「登录状态已失效」，
+ * 用户会在没做任何操作前就以为凭据已失效/被他人使用——这两件事语义完全不同，必须区分：
+ * 「尚未下发 / 正在核销」（等待中，中性）vs「下发后被拒」（真失败，报错）。
+ */
+const isAwaitingHostInitConfig = computed(
+  () =>
+    strictTokenValidation.value &&
+    (!initConfigReceived.value || hostInitInFlight.value)
+);
+
+/** 等待凭据期间给**终端用户**看的说明。
+ *
+ * 措辞刻意避开「宿主」「INIT_CONFIG」「Ticket」「API Key」：这些是接入方术语，最终用户
+ * 既不知道指的是什么，也不知道自己能做什么——"请在宿主页面完成初始化"连"宿主页面是
+ * 哪个页面"都没说。背景骨架已经交代了"这里将是一个对话界面"，文案只需说清在等什么。
+ *
+ * 超过宽限期仍未收到凭据时，切换为可执行的引导：此时多半是宿主侧没登录、或接入配置
+ * （域名白名单等）没配对，继续显示"稍等片刻"就是骗人——用户会一直干等下去。
+ */
+const HOST_INIT_NOTICE_GRACE_MS = 10_000;
+const hostInitNoticeExpired = ref(false);
+const hostInitNotice = computed(() =>
+  hostInitNoticeExpired.value
+    ? {
+        title: "暂未收到登录信息",
+        message:
+          "请回到原系统重新进入本页面。若反复出现，请联系管理员确认接入配置是否正确。",
+      }
+    : {
+        title: "正在获取登录信息",
+        message: "正在从原系统获取你的登录信息，稍等片刻即可开始对话。",
+      }
+);
+
+let hostInitNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+watch(
+  isAwaitingHostInitConfig,
+  (awaiting) => {
+    if (hostInitNoticeTimer !== undefined) {
+      clearTimeout(hostInitNoticeTimer);
+      hostInitNoticeTimer = undefined;
+    }
+    if (!awaiting) {
+      hostInitNoticeExpired.value = false;
+      return;
+    }
+    hostInitNoticeExpired.value = false;
+    hostInitNoticeTimer = setTimeout(() => {
+      hostInitNoticeExpired.value = true;
+    }, HOST_INIT_NOTICE_GRACE_MS);
+  },
+  { immediate: true }
+);
+onUnmounted(() => {
+  if (hostInitNoticeTimer !== undefined) {
+    clearTimeout(hostInitNoticeTimer);
+    hostInitNoticeTimer = undefined;
+  }
+});
+
+/** 仅在服务端校验通过后同步到内存，避免 URL 里陈旧的 ?token= 覆盖有效凭据。
+ *
+ * 凭据只保留在内存（config.token + axios 默认头）与同源 HttpOnly Cookie 中，**不再写入
+ * 任何本地存储**：localStorage 里的副本任何一次 XSS 都能带走，且会长期驻留。
+ * 这里顺带清理旧版本遗留的本地副本。
+ */
+const syncValidatedCredentials = (apiKey: string) => {
+  config.token = apiKey;
+  localStorage.removeItem("api_key");
+  localStorage.removeItem("yovole_token");
+  axios.defaults.headers.common["Authorization"] = `Bearer ${apiKey}`;
+  axios.defaults.headers.common["X-API-Key"] = apiKey;
+  // 同时持久化到本 tab 的 sessionStorage：刷新后内存已空，靠它（而不是靠可能不发送的
+  // 跨站 Cookie）重建请求头，既能撑住 F5，也不会与其它 tab / 实例互相覆盖。
+  persistEmbedSession(apiKey);
+};
+
+const validateToken = async (options?: { strict?: boolean }): Promise<boolean> => {
+  const strict = options?.strict ?? strictTokenValidation.value;
+  const attachUser = (data: Record<string, unknown>) => {
+    accountInfo.value = data as typeof accountInfo.value;
+    currentUser.value = data as typeof currentUser.value;
+  };
+
+  // 后端在收到长期 API Key 时会换发短期 embed 会话令牌；有则优先使用，让真实 Key 用后即弃。
+  let issuedSessionToken = "";
+
+  const tryOnce = async (headers: Record<string, string>) => {
+    const response = await axios.get("/api/portal/auth/user_apikey", { headers });
+    if (response.status === 200 && response.data?.status === "success") {
+      attachUser(response.data.data);
+      issuedSessionToken = String(response.data.data?.session_token || "");
+      // 只「记录」后端是否下发了 Cookie，不在这里清 URL：是否清除由调用方在会话令牌
+      // 真正落地（sessionStorage）之后统一判定——session_cookie_issued 只说明服务端
+      // 写了 Set-Cookie，跨站 iframe 里浏览器未必会存、更未必会回传。
+      lastSessionCookieIssued.value = Boolean(response.data.data?.session_cookie_issued);
+      return true;
+    }
+    return false;
+  };
+
+  const authHeaders = (token: string) => ({
+    Authorization: `Bearer ${token}`,
+    "X-API-Key": token,
+  });
+
+  /** 按同源 Cookie 的身份完成认证：清掉可能属于上一位用户的本地凭据与请求头。 */
+  const attachCookieIdentity = (data: Record<string, unknown>) => {
+    attachUser(data);
+    localStorage.removeItem("api_key");
+    localStorage.removeItem("yovole_token");
+    delete axios.defaults.headers.common["Authorization"];
+    delete axios.defaults.headers.common["X-API-Key"];
+    config.token = "";
+  };
+
+  /**
+   * 本 tab 存储的嵌入令牌「有效但属于别人」时，改用同源 Cookie 的身份。
+   *
+   * sessionStorage 里的令牌是上一位使用者留下的，而浏览器 Cookie 已经是新登录的用户
+   * （同一台机器换人登录、或门户退出后换账号再打开嵌入页）。此时若继续用存储令牌，界面
+   * 会显示新用户、数据却读写到旧用户名下——包括读出对方的会话。Cookie 才是当前权威身份，
+   * 因此这里以 Cookie 为准并丢弃存储令牌。
+   *
+   * 返回 true 表示已按 Cookie 身份认证成功（调用方直接成功返回）。
+   */
+  const switchToCookieIdentityIfChanged = async (): Promise<boolean> => {
+    const storedIdentity = currentIdentityKey();
+    if (!storedIdentity) return false;
+    try {
+      const res = await fetch("/api/portal/auth/user_apikey", { credentials: "include" });
+      if (!res.ok) return false;
+      const body = await res.json();
+      if (body?.status !== "success" || !body.data) return false;
+      const cookieIdentity = identityKeyFromUserData(body.data);
+      if (!cookieIdentity || cookieIdentity === storedIdentity) return false;
+      console.warn("[Auth] Stored embed session belongs to another identity; using the session cookie identity instead.");
+      attachCookieIdentity(body.data);
+      clearEmbedSession();
+      lastSessionCookieIssued.value = false;
+      console.log("[Auth] Validation success via session cookie identity:", accountInfo.value?.user_name);
+      return true;
+    } catch (e: any) {
+      console.warn("[Auth] Cookie identity reconciliation failed:", e?.message || e);
+      return false;
+    }
+  };
+
+  if (strict) {
+    const token = config.token?.trim();
+    if (!token) return false;
+    try {
+      const ok = await tryOnce(authHeaders(token));
+      if (ok) {
+        // 优先使用后端换发的短期会话令牌，真实 Key 用后即弃
+        syncValidatedCredentials(issuedSessionToken || token);
+        // 令牌已落到本 tab，刷新有据可依，可以清 URL 里的长期 Key 了
+        maybeStripUrlAfterSessionReady();
+        console.log("[Auth] Strict validation success:", accountInfo.value?.user_name);
+        return true;
+      }
+    } catch (error: any) {
+      const status = error.response?.status;
+      console.warn("[Auth] Strict validation failed:", status || error.message);
+    }
+    return false;
+  }
+
+  const candidates: string[] = [];
+  const add = (t?: string | null) => {
+    const s = t?.trim();
+    if (s && !candidates.includes(s)) candidates.push(s);
+  };
+  // 显式凭据（URL ?token= / INIT_CONFIG）优先；其次才是本 tab 持久化的嵌入会话——
+  // 刷新后前者为空、后者非空，正好接上，且不依赖在跨站 iframe 里可能不发送的 Cookie。
+  // 先留存一份清理前的快照：下面若判定会话已失效会清掉它，但「是否回落 Cookie」得按
+  // 本次是否真的带了嵌入凭据来定，不能被清理动作改写。
+  const storedSessionCredential = readEmbedSession();
+  add(config.token);
+  add(storedSessionCredential);
+
+  console.log("[Auth] Starting validation, candidates:", candidates.length);
+
+  let rejectedCredential = false;
+  const explicitToken = String(config.token || "").trim();
+  for (const key of candidates) {
+    try {
+      const ok = await tryOnce(authHeaders(key));
+      if (ok) {
+        // 只有「本 tab 存储的令牌」（而非本次显式下发的 token）才允许被 Cookie 身份取代：
+        // 它是上一位使用者留下的，而 Cookie 已经是新登录的用户。
+        const usingStoredCredential = key === storedSessionCredential && key !== explicitToken;
+        if (usingStoredCredential && (await switchToCookieIdentityIfChanged())) {
+          return true;
+        }
+        // 优先使用后端换发的短期会话令牌，真实 Key 用后即弃
+        syncValidatedCredentials(issuedSessionToken || key);
+        // 令牌已落到本 tab，刷新有据可依，可以清 URL 里的长期 Key 了
+        maybeStripUrlAfterSessionReady();
+        console.log("[Auth] Validation success:", accountInfo.value?.user_name);
+        return true;
+      }
+    } catch (error: any) {
+      const status = error.response?.status;
+      if (status === 401 || status === 403) {
+        // 显式凭据（URL ?token= / INIT_CONFIG 的 token）被拒：宿主已经明确指定了身份，
+        // 绝不能再拿「本 tab 存储的令牌」顶上——那个令牌属于上一位使用者，顶上去等于
+        // 宿主想切到 B、页面却静默地以 A 的身份继续跑（共享设备上就是串号）。
+        if (key === explicitToken) {
+          console.warn(
+            "[Auth] Explicit credential rejected (" + status + "); not falling back to the stored session.",
+          );
+          return false;
+        }
+        console.warn("[Auth] Key candidate rejected (" + status + "), trying next...");
+        rejectedCredential = true;
+        continue;
+      }
+      console.warn("[Auth] Validation error (network/server):", error.message);
+      return false;
+    }
+  }
+
+  if (rejectedCredential) {
+    // 本 tab 持久化的会话已被服务端拒绝（过期/被吊销）——清掉，避免每次刷新都白试一次
+    clearEmbedSession();
+    lastSessionCookieIssued.value = false;
+  }
+
+  // 显式提供了凭据（URL ?token= 或 INIT_CONFIG 的 token/api_key）时，凭据无效即失败，
+  // 不再回落到同源 Cookie：否则宿主传了无效 token 却以浏览器里残留的 portal 会话「成功」
+  // 进入，共享设备上会被上一位用户带着进门，代客场景下还会把身份静默换成门户登录用户。
+  //
+  // 只有「本 tab 存储的嵌入令牌」不同：它可能正是上一位使用者留下的、已被吊销，
+  // 此时回落到当前 Cookie 身份才是正确行为（换人登录的主场景）；仅当浏览器里确实没有
+  // 同源 Cookie 会话时才会失败。
+  if (!config.token) {
+    // 仅携带 Cookie（httponly portal_session），且不走 axios 拦截器以免带上失效的 localStorage
+    try {
+      const res = await fetch("/api/portal/auth/user_apikey", { credentials: "include" });
+      if (res.ok) {
+        const body = await res.json();
+        if (body?.status === "success" && body.data) {
+          attachCookieIdentity(body.data);
+          console.log("[Auth] Validation success via session cookie:", accountInfo.value?.user_name);
+          return true;
+        }
+      }
+    } catch (e: any) {
+      console.warn("[Auth] Cookie-only validation failed:", e.message);
+    }
+  }
+
+  return false;
+};
+const initChat = async (options?: { skipAuth?: boolean }) => {
+  const initGeneration = conversationInitializationGeneration;
+  isInitialLoading.value = true;
+  try {
+    // 1. Validate Token First (The only blocking step)
+    if (!options?.skipAuth) {
+      const isValid = await validateToken();
+      if (initGeneration !== conversationInitializationGeneration) return;
+      if (!isValid) {
+        // 有 token 说明是凭据本身被拒；无 token 则说明同源 Cookie 会话回落也失败
+        authFailureReason.value = config.token ? "invalid_token" : "no_session";
+        hasPermission.value = false;
+        isInitialLoading.value = false;
+        return;
+      }
+    }
+    if (initGeneration !== conversationInitializationGeneration) return;
+    hasPermission.value = true;
+    // 身份已在上面确定：若与界面上会话所属身份不同（换用户登录 / 宿主换票），先丢弃
+    // 上一位用户的会话现场。此处保留本次 INIT_CONFIG 下发的 resume id——它属于新身份。
+    const identityKey = currentIdentityKey();
+    if (identityKey && identityKey !== activeIdentityKey) {
+      console.log("[Session] Identity changed; resetting the previous user's session view.");
+      resetSessionForIdentityChange(identityKey, { preserveRequestedConversationId: true });
+    }
+    // 会话置顶是账号级偏好：身份确定后再加载（上面的 reset 已清掉上一位用户的置顶）。
+    void loadPinnedConversations();
+    // 2. Clear skeleton as soon as auth is confirmed
+    isInitialLoading.value = false;
+    // 3. Set default welcome message if not provided
+    if (!config.welcomeMessage) {
+      const displayName = accountInfo.value?.real_name || accountInfo.value?.user_name || "";
+      const greeting = displayName ? `您好，${displayName}！` : "您好！";
+      config.welcomeMessage = `${greeting}我是你的智能体助手，很高兴为您服务。`;
+    }
+    // 初始页「我的资源」统计：鉴权成功后拉取一次（失败时前端走 fallback）
+    void loadWorkbenchHome();
+    // 4. Background tasks (non-blocking)
+    Promise.all([fetchModels(), fetchAccountInfo(), fetchSlashCommands()]).catch(err => {
+      console.warn("[Init] Non-critical background loading failed:", err.message);
+    });
+    // 5. Preload Agents & Validate Expert Mode / URL agent lock
+    if (urlPinnedAgentKey.value) {
+      const ok = await resolveUrlPinnedAgent();
+      if (initGeneration !== conversationInitializationGeneration) return;
+      if (!ok) {
+        isInitialLoading.value = false;
+        return;
+      }
+    }
+    fetchAllowedAgents().then(() => {
+        if (isRoutingSettingsLocked.value) {
+            // 集成锁定时不写入用户偏好，避免覆盖用户自己的默认智能体。
+            if (integrationAgentLockId.value) {
+              applyIntegrationAgentLock(integrationAgentLockId.value);
+            }
+            return;
+        }
+        if (config.routingMode === 'expert' && config.expertAgentId) {
+            const isValid = allowedAgents.value.some(a => a.id === config.expertAgentId);
+            if (!isValid) {
+                console.warn("[Init] Saved expert agent invalid/unauthorized. Downgrading to Auto.");
+                switchToAuto();
+            }
+        }
+    }).catch(e => console.warn("Failed to preload agents", e));
+    // 6. Workbench/host explicit resume wins; otherwise fetch the active conversation.
+    //    任何来源的会话 ID 都必须先过归属校验：它只是字符串，换身份后不会自己变，
+    //    直接采用就会加载（并继续写入）别人的会话。
+    if (initGeneration !== conversationInitializationGeneration) return;
+    let loadedCid = false;
+    // 归属判定「暂时拿不到结论」（unknown）与「确实是别人的」（foreign）必须分开处理：
+    // 前者绝不能被后面的兜底新建会话顺手覆盖掉用户的续接指针。
+    let adoptionUnknown = false;
+    if (requestedConversationId) {
+      const requested = String(requestedConversationId);
+      const requestedAdoption = await checkConversationAdoption(requested);
+      // await 期间可能已经开始了新一次初始化（宿主重发 INIT_CONFIG / 重新校验身份）：
+      // 必须在这里再确认一次代次，否则会把上一代的结论写进新一代的状态里。
+      if (initGeneration !== conversationInitializationGeneration) return;
+      if (requestedAdoption === 'adoptable') {
+        conversationId.value = requested;
+        persistConversationId(requested);
+        updateActiveConversationOnServer(requested);
+        loadedCid = true;
+      } else {
+        requestedConversationId = "";
+        // applyInitConfigPayload 只登记待采用 ID，但更早的采用/新建仍可能把同一个 ID
+        // 留在 conversationId 上；校验不通过时必须一并清掉，否则后面会「沿用」这个
+        // 不可用的他人会话 ID，既不新建会话、又会在空历史里停住。
+        if (conversationId.value === requested) conversationId.value = "";
+        // 只有确认「确实是别人的」才清掉本地记录：网络异常时清掉，会平白删掉用户
+        // 自己的续接记录（会话仍在历史列表里，但不再自动续接）。
+        if (requestedAdoption === 'foreign') clearStoredConversationId();
+        if (requestedAdoption === 'unknown') adoptionUnknown = true;
+      }
+    }
+    if (initGeneration !== conversationInitializationGeneration) return;
+
+    if (!loadedCid) {
+      const savedId = readStoredConversationId();
+      const savedAdoption = savedId ? await checkConversationAdoption(savedId) : 'unknown';
+      if (initGeneration !== conversationInitializationGeneration) return;
+      if (savedId && savedAdoption === 'adoptable') {
+        conversationId.value = savedId;
+        // 认领到本标签：否则本标签的指针一直为空，下次刷新又会读到被别人覆盖的共享指针。
+        persistConversationId(savedId);
+        updateActiveConversationOnServer(savedId);
+        loadedCid = true;
+      } else if (savedId && savedAdoption === 'foreign') {
+        // 本身份下的残留记录已属于别人（历史遗留写入）：清掉，不要再读。
+        clearStoredConversationId();
+      } else if (savedId && savedAdoption === 'unknown') {
+        adoptionUnknown = true;
+      }
+      if (initGeneration !== conversationInitializationGeneration) return;
+      if (shouldUseServerActiveConversation()) {
+        try {
+          const activeRes = await axios.get("/api/v1/chat/active", {
+            params: activeConversationRequestParams(),
+            headers: embedAuthHeaders()
+          });
+          if (initGeneration !== conversationInitializationGeneration) return;
+          const activeCid = String(activeRes.data?.data?.conversation_id || "").trim();
+          // 同一类错误：`/chat/active` 也是 StandardResponse，按 `status` 判定永远不成立，
+          // 于是「跨设备/无痕模式同步活跃会话」自引入起就没生效过。
+          if (activeCid && isApiSuccess(activeRes.data)) {
+            const activeAdoption = await checkConversationAdoption(activeCid);
+            if (initGeneration !== conversationInitializationGeneration) return;
+            if (activeAdoption === 'adoptable') {
+              conversationId.value = activeCid;
+              persistConversationId(activeCid);
+              loadedCid = true;
+            } else {
+              // 确认属于别人（foreign）时交由下面新建会话覆盖这条指针；只是判不出来
+              // （unknown）则保留指针，只开一个不落盘的临时会话。
+              console.warn("[Init] Server active conversation is not adoptable; starting a new one.");
+              if (activeAdoption === 'unknown') adoptionUnknown = true;
+            }
+          }
+        } catch (e: any) {
+          // 活跃会话查不出来同样是「判不出来」：不得让后面的兜底新建会话覆盖掉它。
+          console.warn("[Init] Failed to fetch active conversation from server:", e);
+          adoptionUnknown = true;
+        }
+      }
+    }
+    if (initGeneration !== conversationInitializationGeneration) return;
+
+    if (!loadedCid) {
+      if (!conversationId.value) {
+        // 判不出来时只开临时会话（不落盘、不覆盖服务端指针）。用户自己的会话指针与历史
+        // 都还在，下次打开（归属校验恢复）照样能续接。
+        generateNewConversation({ persist: !adoptionUnknown });
+      } else {
+        updateActiveConversationOnServer(conversationId.value);
+      }
+    }
+
+    // 7. 恢复该会话自己的专家选择（无记录时保持账号默认），再加载历史
+    if (conversationId.value) {
+      await loadConversationRouting(conversationId.value);
+    }
+
+    // 8. Load history if exists
+    if (conversationId.value) {
+      fetchConversationHistory(false, initGeneration)
+        // 历史加载完成后再还原流式草稿：已有落库终态时草稿会被丢弃，不会被重复注入。
+        .then(() => restoreEmbedStreamSnapshot(initGeneration))
+        .catch(e => console.error("[Init] History load failed:", e));
+    }
+  } catch (e) {
+    console.error("Init chat failed", e);
+    isInitialLoading.value = false;
+  }
+};
+// History State
+const historyOffset = ref(0);
+const hasMoreHistory = ref(true);
+const HISTORY_LIMIT = 20;
+const isLoadingHistory = ref(false);
+let historyRequestSequence = 0;
+let historyLoadingConversationId = "";
+let historyAbortController: AbortController | null = null;
+const fetchConversationHistory = async (
+  isLoadMore = false,
+  expectedInitializationGeneration = conversationInitializationGeneration,
+) => {
+  const historyConversationId = conversationId.value;
+  if (!shouldStartConversationHistoryLoad({
+    targetConversationId: historyConversationId,
+    isLoadMore,
+    hasMore: hasMoreHistory.value,
+    isLoading: isLoadingHistory.value,
+    loadingConversationId: historyLoadingConversationId,
+  })) return;
+
+  const requestSequence = ++historyRequestSequence;
+  // 切换会话时抢占：旧请求立即作废，避免它在浏览器连接队列里继续占位。
+  historyAbortController?.abort();
+  const abortController = new AbortController();
+  historyAbortController = abortController;
+  historyLoadingConversationId = historyConversationId;
+  isLoadingHistory.value = true;
+  // Save current scroll height to maintain position after loading
+  const container = messagesContainer.value;
+  const oldScrollHeight = container ? container.scrollHeight : 0;
+  const oldScrollTop = container ? container.scrollTop : 0;
+  try {
+    const headers: any = {};
+    if (config.token) {
+      headers["Authorization"] = `Bearer ${config.token}`;
+      headers["X-API-Key"] = config.token;
+    }
+    const page = Math.floor((isLoadMore ? historyOffset.value : 0) / HISTORY_LIMIT) + 1;
+    const res = await axios.get(
+      `/api/v1/chat/history`,
+      {
+          params: { conversation_id: historyConversationId, page: page, page_size: HISTORY_LIMIT },
+          headers,
+          signal: abortController.signal,
+      }
+    );
+    if (
+      requestSequence !== historyRequestSequence ||
+      expectedInitializationGeneration !== conversationInitializationGeneration ||
+      conversationId.value !== historyConversationId
+    ) return;
+    if (res.data?.data && Array.isArray(res.data.data.items)) {
+      const rawItems = res.data.data.items;
+      // Update offset and check if more
+      if (rawItems.length < HISTORY_LIMIT) {
+        hasMoreHistory.value = false;
+      }
+      historyOffset.value += rawItems.length;
+
+      const newHistoryBatch: Message[] = [];
+      const offset = isLoadMore ? historyOffset.value : 0;
+
+      // Items are returned newest first. Reverse to oldest first for UI.
+      const sortedItems = [...rawItems].reverse();
+
+      sortedItems.forEach((item: any, idx: number) => {
+          if (item.query) {
+              newHistoryBatch.push({
+                  id: Date.now() + idx * 2 + offset,
+                  trace_id: item.trace_id,
+                  role: 'user',
+                  content: item.query,
+                  logs: [],
+                  isThinking: false,
+                  feedback: null,
+                  timestamp: item.created_at
+              });
+          }
+          if (item.summary || item.process_timeline || item.reasoning_content) {
+              const hydratedTimeline = hydrateHistoryProcessTimeline(item.process_timeline, item.reasoning_content);
+              // 提问卡实时渲染依赖消息对象上的 userQuestion（不落库），历史回放需从
+              // process_timeline 快照重建，否则卡片只剩一行「需要用户回答」。
+              const persistedQuestions = userQuestionStatesFromTimeline(hydratedTimeline);
+              newHistoryBatch.push({
+                  id: Date.now() + idx * 2 + 1 + offset,
+                  trace_id: item.trace_id,
+                  role: 'agent',
+                  content: item.summary,
+                  reasoningContent: item.reasoning_content ?? undefined,
+                  processTimeline: hydratedTimeline,
+                  citations: item.citations ?? undefined,
+                  isHistory: true,
+                  userQuestion: persistedQuestions[0],
+                  logs: [],
+                  isThinking: false,
+                  feedback: null,
+                  agentName: item.agent_name ?? undefined,
+                  agentDisplayName: item.agent_display_name || (String(item.agent_name || '').startsWith('sys_') ? '系统助手' : undefined),
+                  agentType: item.agent_type ?? undefined,
+                  agentAvatarUrl: item.agent_avatar_url ?? undefined,
+                  prompt_tokens: item.prompt_tokens ?? undefined,
+                  completion_tokens: item.completion_tokens ?? undefined,
+                  total_tokens: item.total_tokens ?? undefined,
+                  hasDataOutput: Boolean(item.has_data_output),
+                  reusableResultStatus: item.reusable_result_id
+                    ? {
+                        status: item.reusable_result_status || "saved",
+                        resultId: String(item.reusable_result_id),
+                      }
+                    : undefined,
+                  timestamp: item.created_at
+              });
+          }
+      });
+      // 首屏历史必须无条件覆盖：空结果同样要清空。否则「本会话没有任何属于当前用户
+      // 的轮次」这种情况（正好是换用户后残留的会话 ID 会遇到的）会保留上一位用户已经
+      // 渲染在界面上的消息，形成看得见的串会话。
+      if (newHistoryBatch.length === 0 && !isLoadMore) {
+        messages.value = [];
+      }
+      if (newHistoryBatch.length > 0) {
+        if (
+          requestSequence !== historyRequestSequence ||
+          expectedInitializationGeneration !== conversationInitializationGeneration ||
+          conversationId.value !== historyConversationId
+        ) return;
+        if (isLoadMore) {
+           // Prepend to messages (remove existing "History Start" separator if it exists)
+           messages.value = [...newHistoryBatch, ...messages.value.filter(m => m.role !== 'system' || m.content !== '以上是历史会话，可以重置会话清除')];
+           // Restore scroll position
+           await nextTick();
+           if (
+             requestSequence !== historyRequestSequence ||
+             expectedInitializationGeneration !== conversationInitializationGeneration ||
+             conversationId.value !== historyConversationId
+           ) return;
+           if (container) {
+             const newScrollHeight = container.scrollHeight;
+             const heightAdded = newScrollHeight - oldScrollHeight;
+             // Use behavior: 'instant' to prevent jumps and ignore any default scrolling behaviors
+             container.scrollTo({
+                top: heightAdded + oldScrollTop,
+                behavior: 'instant' as any
+             });
+           }
+        } else {
+          // First Load
+          // Add Separator
+           const lastMsgInfo = rawItems.length > 0 ? rawItems[0] : null;
+          let timeStr = "";
+          if (lastMsgInfo && lastMsgInfo.created_at) {
+             try {
+                const date = new Date(lastMsgInfo.created_at);
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, "0");
+                const day = String(date.getDate()).padStart(2, "0");
+                const hours = String(date.getHours()).padStart(2, "0");
+                const minutes = String(date.getMinutes()).padStart(2, "0");
+                timeStr = `${year}-${month}-${day} ${hours}:${minutes}`;
+             } catch (e) {}
+          }
+          newHistoryBatch.push({
+            id: Date.now() + 999999,
+            role: "system",
+            content: "以上是历史会话，可以重置会话清除",
+            timestamp: timeStr,
+          });
+          messages.value = newHistoryBatch;
+          nextTick(scrollToBottom);
+        }
+        // 回答回执是后续轮次的用户消息，用它把重建出的卡片从 pending 回填为
+        // submitted/cancelled：否则历史卡片仍显示未作答，点击必然失败
+        //（Redis 中的待答记录早已随 TTL 过期）。
+        const historyReceipts = messages.value
+          .map((message) => (message.role === 'user' ? parseUserQuestionReceipt(message.content) : null))
+          .filter((receipt): receipt is UserQuestionReceipt => receipt !== null);
+        applyUserQuestionReceipts(messages.value, historyReceipts);
+      }
+    }
+  } catch (e) {
+    // 主动抢占/卸载时的取消不是错误，不刷告警。
+    if ((e as any)?.code !== "ERR_CANCELED") {
+      console.warn("Failed to load session history", e);
+    }
+  } finally {
+    if (requestSequence === historyRequestSequence) {
+      isLoadingHistory.value = false;
+      historyLoadingConversationId = "";
+      if (historyAbortController === abortController) historyAbortController = null;
+    }
+  }
+};
+
+const showQuotaStatusInChat = async () => {
+  messages.value.push({
+    id: Date.now(),
+    role: "user",
+    content: "/quota",
+    timestamp: new Date().toISOString(),
+  });
+  await refreshQuota();
+  messages.value.push({
+    id: Date.now() + 1,
+    role: "agent",
+    agentName: "sys_quota",
+    agentDisplayName: "系统助手",
+    content: buildQuotaStatusMarkdown(quotaStatus.value),
+    timestamp: new Date().toISOString(),
+  });
+  autoScrollEnabled.value = true;
+  await nextTick();
+  scrollToBottom(true);
+};
+
+// --- Logic ---
+const handleSystemCommand = async (cmd: string): Promise<boolean> => {
+  const normalizedCmd = normalizeAgentSwitchCommand(cmd, allowedAgents.value);
+  if (isDatasetPortalSlashCommand(normalizedCmd)) {
+    userInput.value = "";
+    if (isRoutingSettingsLocked.value && !agentHasCapability("data_query")) {
+      showToast("当前智能体不支持数据查询，无法打开数据门户", "warning");
+      return true;
+    }
+    if (showPortalDrawer.value) {
+      closePortalDrawer();
+    } else {
+      await openPortalDrawer();
+    }
+    return true;
+  }
+  if (isWorkspaceSlashCommand(normalizedCmd)) {
+    userInput.value = "";
+    toggleWorkspaceDrawer();
+    return true;
+  }
+  if (isMyArtifactsSlashCommand(normalizedCmd)) {
+    userInput.value = "";
+    toggleMyArtifactsDrawer();
+    return true;
+  }
+  if (isKnowledgePortalSlashCommand(normalizedCmd)) {
+    userInput.value = "";
+    if (isRoutingSettingsLocked.value && !agentHasCapability("knowledge_base")) {
+      showToast("当前智能体不支持知识库能力，无法打开知识库中心", "warning");
+      return true;
+    }
+    if (showKnowledgePortal.value) {
+      closeKnowledgePortal();
+    } else {
+      await openKnowledgePortal();
+    }
+    return true;
+  }
+  if (normalizedCmd === "/switch_to_auto" || normalizedCmd === "/switch_agent_auto") {
+    userInput.value = "";
+    if (isRoutingSettingsLocked.value) {
+      showToast("当前链接已锁定指定智能体，无法切换到智能委派", "warning");
+      return true;
+    }
+    switchToAuto();
+    return true;
+  }
+  if (normalizedCmd.startsWith("/switch_agent_expert?agent_id=")) {
+    userInput.value = "";
+    const agentId = normalizedCmd.split("?agent_id=")[1];
+    if (agentId) {
+      if (isRoutingSettingsLocked.value) {
+        showToast("当前链接已锁定指定智能体，无法切换其他专家", "warning");
+        return true;
+      }
+      switchToExpert(agentId);
+    }
+    return true;
+  }
+  switch (normalizedCmd) {
+    case "/history":
+      userInput.value = "";
+      showHistorySidebar.value = !showHistorySidebar.value;
+      return true;
+    case "/settings":
+      userInput.value = "";
+      showSettings.value = true;
+      return true;
+    case "/quota":
+    case "/tokens":
+      userInput.value = "";
+      await showQuotaStatusInChat();
+      return true;
+    case "/compact":
+      userInput.value = "";
+      await manualCompactEmbedContext();
+      return true;
+    case "/new":
+    case "/clear": // legacy alias
+      userInput.value = "";
+      void startNewConversation();
+      return true;
+    case "/project":
+      userInput.value = "";
+      // 与新会话一致：先清空当前对话内容并换新 conversation_id，再打开项目资源配置
+      // （同样要停掉在途生成，否则新会话的输入框会被上一轮的 isProcessing 锁住）
+      resetConversationScopedState();
+      messages.value = [];
+      config.enableGrounding = false;
+      generateNewConversation();
+      postMessageToHost({
+        type: "CONVERSATION_CHANGED",
+        conversation_id: conversationId.value,
+        clear_host_conversation_pin: true,
+      });
+      openResourceScopeModal();
+      return true;
+  }
+  return false;
+};
+// UI Settings Actions
+const setTheme = (theme: string) => {
+  applyTheme(theme);
+  config.theme = theme;
+};
+const setColor = (color: string) => {
+  activeColor.value = color;
+  applyTheme(config.theme, { "--primary-color": color });
+};
+// ---------------------------------------------------------------------------
+// 微信小程序宿主适配
+// ---------------------------------------------------------------------------
+// 小程序 web-view 内不能触发 <a download>（会被微信拦截），
+// 且 H5 → 小程序的唯一【即时】通道是 wx.miniProgram.*：
+// wx.miniProgram 的 postMessage 只在后退/组件销毁/分享/复制链接时批量触发，
+// 不具备实时性，因此本文件不得用它做实时通知。
+const MINIPROGRAM_FILE_PAGE = '/pages/file/file'
+const MINIPROGRAM_CHAT_PAGE = '/pages/chat/chat'
+const MINIPROGRAM_NO_AGENT_HINT = '尚未开放智能体，请联系管理员'
+
+/** 是否运行在微信小程序 web-view 内 */
+const isMiniprogramHost = (): boolean => {
+  if (typeof window === 'undefined') return false
+  const env = (window as any).__wxjs_environment
+  if (env === 'miniprogram') return true
+  return /miniProgram/i.test(navigator.userAgent || '')
+}
+
+/** 交给小程序原生页打开文件；返回 true 表示已接管 */
+const openFileInMiniapp = (url: string): boolean => {
+  const wx = (window as any).wx
+  if (!isMiniprogramHost() || !wx?.miniProgram?.navigateTo || !url) return false
+  wx.miniProgram.navigateTo({
+    url: `${MINIPROGRAM_FILE_PAGE}?url=${encodeURIComponent(url)}`,
+  })
+  return true
+}
+
+/** 让小程序重新签票并回到聊天页；返回 true 表示已接管 */
+const relaunchMiniappChat = (instanceId?: string): boolean => {
+  const wx = (window as any).wx
+  if (!isMiniprogramHost() || !wx?.miniProgram?.reLaunch) return false
+  const query = instanceId ? `?instance_id=${encodeURIComponent(instanceId)}` : ''
+  wx.miniProgram.reLaunch({ url: `${MINIPROGRAM_CHAT_PAGE}${query}` })
+  return true
+}
+// --- Actions ---
+const copyMessage = async (content: string) => {
+  if (!content) return;
+  const ok = await copyTextSecure(content);
+  if (ok) {
+    showToast("已复制到剪贴板", "success");
+  } else {
+    console.error("Failed to copy");
+    showToast("复制失败，请手动复制", "error");
+  }
+};
+
+const exportData = async (traceId: string, format = 'xlsx') => {
+  if (!traceId) return;
+  try {
+    // 导出端点现在登记产物到 ai_artifacts 并返回带鉴权 download_url（JSON，非文件流），
+    // 由 /generated-files/{id} 以二进制 FileResponse 提供下载，避免 blob 方式误把 JSON 当文件打开。
+    const response = await axios.get(`/api/v1/chat/export/data/${traceId}`, {
+      params: { format }
+    });
+    const downloadUrl: string = response.data?.download_url;
+    if (!downloadUrl) {
+      throw new Error('missing download_url');
+    }
+    const href = resolveGeneratedFileHref(downloadUrl);
+    const filename: string = response.data?.filename || `nanzi_export_${traceId.slice(0, 8)}.${format}`;
+    // 小程序 web-view 内 <a download> 会被微信拦截，改交原生文件页处理
+    if (openFileInMiniapp(href)) {
+      return;
+    }
+    const link = document.createElement('a');
+    link.href = href;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    showToast('数据导出成功', 'success');
+  } catch (e) {
+    console.error("Export failed", e);
+    showToast('导出失败：未找到可导出数据', 'error');
+  }
+};
+const regenerate = async () => {
+  await sendPreparedMessage(async () => {
+    const lastUserMsg = [...messages.value]
+      .reverse()
+      .find((m) => m.role === "user");
+    if (!lastUserMsg) return null;
+    const userIndex = messages.value.findIndex((message) => message.id === lastUserMsg.id);
+    const remainingMessages = userIndex >= 0
+      ? messages.value.slice(0, userIndex)
+      : [...messages.value];
+    const keepCount = remainingMessages.filter(isChatContextMessage).length;
+    const content = splitUserMessageContent(lastUserMsg.content).userPart.trim();
+    if (!content && !lastUserMsg.files?.length) return null;
+    const files = (lastUserMsg.files || []).map((file) => ({ ...file }));
+    const clientRequestId = createClientRequestId();
+    if (!(await truncateServerHistory(keepCount))) return null;
+    messages.value = remainingMessages;
+    return { content, files, clientRequestId, reusableResultId: null };
+  });
+};
+const handleFeedback = async (msg: Message, type: "up" | "down") => {
+  const oldFeedback = msg.feedback;
+  if (msg.feedback === type) {
+    msg.feedback = null;
+  } else {
+    msg.feedback = type;
+  }
+
+  // 立即弹出提示 (乐观更新)
+  if (msg.feedback) {
+     showToast(msg.feedback === 'up' ? "感谢您的点赞！" : "已记录您的反馈，我们将持续改进。", "success");
+  } else {
+     showToast("已取消反馈", "info");
+  }
+
+  if (!msg.trace_id) {
+    console.warn("Cannot post feedback to server: missing trace_id");
+    // 如果是历史消息且缺失 trace_id，目前无法同步到后端，但前端可以保留点击态
+    return;
+  }
+
+  try {
+    await axios.post("/api/portal/chat/feedback", {
+      trace_id: msg.trace_id,
+      feedback: msg.feedback || "none", // Send "none" if un-selecting
+      user_id: currentUser.value?.user_id || "anonymous"
+    });
+  } catch (error) {
+    console.error("Failed to post feedback", error);
+    msg.feedback = oldFeedback; // 失败时回退视觉状态
+  }
+
+  postMessageToHost({
+    type: "USER_FEEDBACK",
+    message_id: msg.id,
+    trace_id: msg.trace_id,
+    feedback: msg.feedback,
+  });
+};
+
+const openModelCallStats = async (msg: any) => {
+  currentStats.value = [];
+  showStatsModal.value = true;
+  loadingStats.value = true;
+  try {
+    const res = await axios.get(`/api/v1/chat/conversation/${conversationId.value}/model_calls`, {
+      params: { trace_id: msg.trace_id }
+    });
+    if (res.data && res.data.data) {
+      currentStats.value = res.data.data.stats || [];
+    }
+  } catch (err) {
+    console.error("加载大模型调用明细失败:", err);
+  } finally {
+    loadingStats.value = false;
+  }
+};
+
+type StopGenerationOptions = {
+  /**
+   * 成功终止时是否需要 toast。
+   * 排队场景（时间线里的「终止」）原本毫无反馈，需要提示；输入框的停止生成已有
+   * 「[用户终止生成]」标记与按钮消失，再弹 toast 反而吵。
+   */
+  notifySuccess?: boolean;
+};
+
+const stopGeneration = (options?: StopGenerationOptions) => {
+  const notifySuccess = options?.notifySuccess ?? false;
+  // 用户主动叫停：此时排队中的快捷提问必须一并作废。否则取消完成后会话锁释放，
+  // watch 会把刚才排队的提问发出去——用户明明按了停止，系统却反向发出一条新提问。
+  dropPendingQuickSend();
+  clearRunStatusNudge();
+  const lastMsg = messages.value.length > 0 ? messages.value[messages.value.length - 1] : null;
+  if (conversationId.value) {
+    void cancelConversationRun(conversationId.value, {
+      traceId: lastMsg?.trace_id,
+      headers: embedAuthHeaders(),
+    })
+      .then((cancelled) => {
+        if (cancelled) {
+          if (notifySuccess) showToast("已终止当前运行并释放会话锁", "success");
+          return;
+        }
+        // 未确认释放始终要提醒：否则用户以为已释放，实际会话锁可能还占着
+        showToast("已停止本地生成，但服务端未确认释放结果", "warning");
+      })
+      .finally(() => {
+        void refreshCurrentRunStatus();
+      });
+  }
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+  isProcessing.value = false;
+  if (thoughtTimer) {
+    clearInterval(thoughtTimer);
+    thoughtTimer = null;
+  }
+  // Mark last thinking message as stopped
+  if (lastMsg && lastMsg.isThinking) {
+    lastMsg.isThinking = false;
+    if (!lastMsg.content) {
+      lastMsg.content = "[已停止生成]";
+    } else {
+      lastMsg.content += "\n\n[用户终止生成]";
+    }
+  }
+};
+const citationPopover = ref<{
+  visible: boolean;
+  citation: any;
+  anchorRect: DOMRect | null;
+  anchorEl: HTMLElement | null;
+}>({
+  visible: false,
+  citation: null,
+  anchorRect: null,
+  anchorEl: null,
+});
+
+const closeCitationPopover = () => {
+  citationPopover.value.visible = false;
+  citationPopover.value.citation = null;
+  citationPopover.value.anchorRect = null;
+  citationPopover.value.anchorEl = null;
+};
+
+const openCitationPopover = (citation: any, event: MouseEvent | HTMLElement) => {
+  const anchor = event instanceof HTMLElement ? event : (event.currentTarget as HTMLElement);
+  if (!anchor) return;
+
+  if (
+    citationPopover.value.visible &&
+    citationPopover.value.citation === citation
+  ) {
+    closeCitationPopover();
+    return;
+  }
+
+  const rect = anchor.getBoundingClientRect();
+  citationPopover.value = {
+    visible: true,
+    citation,
+    anchorRect: new DOMRect(rect.x, rect.y, rect.width, rect.height),
+    anchorEl: anchor,
+  };
+};
+
+const resolveCitation = (msg: Message, citeId: string) => {
+  if (!msg.citations || msg.citations.length === 0) return null;
+
+  let target = msg.citations.find(
+    (c) =>
+      String(c.id) === String(citeId) ||
+      String(c.chunk_id) === String(citeId) ||
+      String(c.chunk_id)?.endsWith(String(citeId))
+  );
+
+  if (!target && /^\d+$/.test(citeId)) {
+    const idx = parseInt(citeId);
+    target = msg.citations[idx - 1] || msg.citations[idx];
+  }
+
+  return target || null;
+};
+
+/** Fig. n 只是 Markdown 渲染器的兼容匹配面，并非知识库引用，不能据此提示「已过期」 */
+const isKnowledgeCitationBadge = (text: string) => /^\s*[\[【]\s*ID\s*:/i.test(text);
+
+const handleShowCitation = async (msg: Message, citeId: string, anchor?: HTMLElement) => {
+  const anchorEl = anchor || (document.querySelector(`[data-cite-id="${citeId}"]`) as HTMLElement | null);
+
+  const target = resolveCitation(msg, citeId);
+  if (!target) {
+    // 引用详情走 Redis 旁路存储且有 TTL：历史消息解析不到即已过期，
+    // 流式进行中则可能只是事件还没到，两种状态必须区分。
+    if (!isKnowledgeCitationBadge(anchorEl?.textContent || "")) return;
+    showToast(
+      msg.isHistory ? "引用详情已过期，正文中的引用标记已无法展开" : "引用详情加载中，请稍候",
+      msg.isHistory ? "warning" : "info",
+    );
+    return;
+  }
+
+  msg.isCitationsExpanded = true;
+  await nextTick();
+  if (anchorEl) {
+    anchorEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    openCitationPopover(target, anchorEl);
+  }
+};
+
+const ragPreviewVisible = ref(false);
+const ragPreviewDatasetId = ref("");
+const ragPreviewDocId = ref("");
+const ragPreviewDocName = ref("");
+const ragPreviewPageNo = ref<string | number>(1);
+const ragPreviewContent = ref("");
+
+const ragPreviewFileUrl = computed(() => {
+  if (!ragPreviewDatasetId.value || !ragPreviewDocId.value) return "";
+  const datasetId = encodeURIComponent(ragPreviewDatasetId.value);
+  const docId = encodeURIComponent(ragPreviewDocId.value);
+  return `/api/portal/ragflow/datasets/${datasetId}/documents/${docId}/file`;
+});
+
+const handleViewOriginal = (citation: any) => {
+  closeCitationPopover();
+  if (citation.source_type === "web") {
+    if (citation.link) {
+      window.open(citation.link, "_blank");
+    }
+  } else {
+    ragPreviewDatasetId.value = citation.dataset_id || "";
+    ragPreviewDocId.value = citation.doc_id || "";
+    ragPreviewDocName.value = citation.doc_name || "文件预览";
+    ragPreviewPageNo.value = citation.page_no || 1;
+    ragPreviewContent.value = citation.content || "";
+    ragPreviewVisible.value = Boolean(ragPreviewDatasetId.value && ragPreviewDocId.value);
+  }
+};
+
+const chatbiMonitorDialogOpen = ref(false);
+const chatbiMonitorResultId = ref<string>();
+const handleChatBIMonitorCreated = (payload: { created: boolean }) => {
+  chatbiMonitorDialogOpen.value = false;
+  showToast(payload.created === false ? "该结果的订阅已存在" : "查询订阅已创建，可在固化报表中管理", "success");
+};
+
+const handleChatBIResultAction = async (
+  action: ChatBIInsightMeta["actions"][number],
+  sourceMessage?: Message,
+) => {
+  if (action.id === "monitor") {
+    chatbiMonitorResultId.value = action.result_id;
+    chatbiMonitorDialogOpen.value = true;
+    return;
+  }
+  if (action.id !== "brief") {
+    if (!armDataQueryAgentForFollowup()) return;
+    return handleQuickQuestion(action.query);
+  }
+  const assistantReport = sourceMessage?.content?.trim();
+  if (!assistantReport) {
+    showToast("未找到当前分析正文，请在本轮回复旁重试", "warning");
+    return;
+  }
+  try {
+    showToast("正在生成业务简报…", "info");
+    const res = await axios.post("/api/portal/chatbi-briefs", {
+      conversation_id: conversationId.value,
+      result_id: action.result_id || sourceMessage?.chatbiInsight?.result_id,
+      export_word: true,
+      assistant_report: assistantReport,
+      polish_with_llm: true,
+    });
+    const artifact = res.data?.data?.artifact;
+    if (artifact?.download_url) {
+      // 小程序 web-view 内 <a download> 会被微信拦截，改交原生文件页处理
+      if (openFileInMiniapp(artifact.download_url)) {
+        return;
+      }
+      const link = document.createElement("a");
+      link.href = artifact.download_url;
+      link.download = artifact.filename || "ChatBI业务简报.docx";
+      link.click();
+    }
+    showToast("业务简报已生成", "success");
+  } catch (error: any) {
+    showToast(error.response?.data?.detail || "业务简报生成失败", "error");
+  }
+};
+
+/**
+ * 仅给已经确认产生过数据结果的 assistant 消息附加快捷追问上下文。
+ * 该上下文不会显示在 Markdown、用户气泡或 messages 中，只作为请求级路由提示。
+ */
+const quickContextForMessage = (msg: Message): QuickQuestionContext | undefined => {
+  if (msg.role !== "agent") return undefined;
+
+  const resultId = msg.chatbiInsight?.result_id || undefined;
+  // reusableResultStatus 可能来自知识库或其他结果类型，不能单独证明这是 ChatBI。
+  // hasDataOutput 和 chatbiInsight 都由服务端查数结果事件/历史字段确认。
+  const hasVerifiedDataResult = msg.hasDataOutput === true || Boolean(msg.chatbiInsight?.result_id);
+  if (!hasVerifiedDataResult) return undefined;
+
+  return {
+    source: "chatbi_result",
+    result_id: resultId,
+    requires_fresh_data: true,
+  };
+};
+
+/**
+ * 快捷按钮（quick button）的待补发队列。
+ *
+ * `remoteRunBusy` 由 run-status 轮询驱动，最长有 1.5s 滞后；SSE 的 `run_status` 终态
+ * 事件在切后台/代理缓冲时可能丢失。此前被锁时直接 `return` 静默丢弃，用户体感就是
+ * 「已经输出完了，第一次点快捷按钮没反应，得再点一次」。改为：点击即核验后端真相，
+ * 确实仍在处理则记下这次点击，锁释放后自动补发，绝不静默吞掉。
+ *
+ * 自动补发带三道保护，避免「替用户发送」反过来造成破坏：
+ *  - 超过 PENDING_QUICK_SEND_TTL_MS 未补发就放弃自动发送（后端会话锁 TTL 可达 600s，
+ *    任务跑很久后突然冒出一条消息比丢失点击更糟）；
+ *  - 用户已开始新一轮输入（有文字或附件）时不代发，且绝不清空其草稿；
+ *  - 只补发到「点击时所在的那个会话」：切换会话后必须丢弃，否则会把 A 会话的提问
+ *    发到 B 会话里。
+ */
+const PENDING_QUICK_SEND_TTL_MS = 15000;
+// @conversation-scoped: pendingQuickSend
+let pendingQuickSend: {
+  content: string;
+  quickContext?: QuickQuestionContext;
+  at: number;
+  /** 产生这次排队的会话；切换会话后该排队即失效。 */
+  conversationId: string;
+  /** 点击时已就绪的「本轮强制走查数智能体」意图，随补发一起生效。 */
+  forceDataQueryAgent: boolean;
+} | null = null;
+const quickSendBlocked = () => isProcessing.value || remoteRunBusy.value || recoveryLocking.value || sendLocked.value;
+/** 输入框里是否已有用户自己的内容（文字或附件）。 */
+const hasUserComposerDraft = () =>
+  Boolean(userInput.value.trim()) || Boolean(chatInputRef.value?.uploadedFiles?.length);
+/** 丢弃排队项，并撤销它携带的一次性「强制走查数」意图（撤销由调用方决定是否跳过）。 */
+const dropPendingQuickSend = ({ keepForceIntent = false } = {}) => {
+  if (!pendingQuickSend) return;
+  if (pendingQuickSend.forceDataQueryAgent && !keepForceIntent) {
+    forceDataQueryAgentOnce.value = false;
+  }
+  pendingQuickSend = null;
+};
+/**
+ * 核验后端真相的在途请求。
+ *
+ * 锁阻塞时用户可能连点（移动端尤其容易），若每次都单独发请求会重复打后端、也会连弹
+ * 两条一模一样的提示。并发点击共用同一次核验；**不丢弃点击**——各次点击仍会各自走到
+ * 「取代排队项」的逻辑，用户最后一次的意图始终生效。
+ */
+let quickSendVerifyInFlight: Promise<unknown> | null = null;
+const verifyRunStatusOnce = () => {
+  if (!quickSendVerifyInFlight) {
+    quickSendVerifyInFlight = Promise.resolve(refreshCurrentRunStatus())
+      .finally(() => { quickSendVerifyInFlight = null; });
+  }
+  return quickSendVerifyInFlight;
+};
+const flushPendingQuickSend = async () => {
+  const pending = pendingQuickSend;
+  if (!pending || quickSendBlocked()) return;
+  pendingQuickSend = null;
+
+  // 会话已切换（或已新建/清空）：这次点击属于旧会话，绝不能落到当前会话里。
+  if (pending.conversationId !== conversationId.value) {
+    if (pending.forceDataQueryAgent) forceDataQueryAgentOnce.value = false;
+    return;
+  }
+
+  if (Date.now() - pending.at > PENDING_QUICK_SEND_TTL_MS) {
+    // 已经等太久：不替用户发送，把问题交回输入框（仅在输入框为空时写入，不覆盖草稿）。
+    if (!hasUserComposerDraft()) userInput.value = pending.content;
+    // 放弃代发即放弃这次「强制走查数」意图，否则会劫持用户之后的普通提问。
+    if (pending.forceDataQueryAgent) forceDataQueryAgentOnce.value = false;
+    showToast("稍早记下的提问已放入输入框，请确认后发送", "info");
+    return;
+  }
+  if (hasUserComposerDraft()) {
+    // 用户已经在写别的内容：不代发，也不动他的输入框。
+    if (pending.forceDataQueryAgent) forceDataQueryAgentOnce.value = false;
+    showToast("检测到新的输入内容，未自动发送稍早记录的提问", "info");
+    return;
+  }
+
+  // 「强制走查数智能体」是一次性意图，必须与补发配对：点击时若已被 arm，而这里不带上，
+  // 补发就会退化成普通路由；同理若不在此处消费，标记会滞留并劫持用户的下一次手动发送。
+  if (pending.forceDataQueryAgent) forceDataQueryAgentOnce.value = true;
+
+  // 用固定快照发送：补发发生在点击之后，若期间用户在输入框敲了字或加了附件，
+  // `sendMessage` 会重新抓取 `userInput`/`uploadedFiles`，把这些残留一起发出去。
+  await sendPreparedMessage(async () => captureSendSnapshot({
+    content: pending.content,
+    quickContext: pending.quickContext,
+    files: [],
+  }));
+};
+// 锁一释放立即补发；这里不依赖用户再点一次。
+watch([isProcessing, remoteRunBusy, sendLocked], () => {
+  void flushPendingQuickSend();
+});
+// 切换 / 新建 / 清空会话后，属于旧会话的排队项立即作废：否则旧会话的提问会被补发到
+// 新会话里（组件在会话切换时并不销毁，队列会跨会话残留）。此处刻意不做 immediate，
+// 以免 setup 期就触碰尚未初始化的状态。
+watch(conversationId, () => {
+  dropPendingQuickSend();
+  clearRunStatusNudge();
+});
+
+const handleQuickQuestion = async (
+  content: string | QuickQuestionPayload,
+  action: "send" | "fill" = "send",
+  sourceContent?: string,
+) => {
+  const question = typeof content === "string" ? content : content.question;
+  const quickContext = action === "send" && typeof content !== "string"
+    ? content.quick_context
+    : undefined;
+  if (!question) return;
+  const selectedSource = sourceContent?.trim();
+  const nextContent = selectedSource
+    ? `${question}${USER_MESSAGE_CONTEXT_DIVIDER}【被点击的 AI 回复】\n${selectedSource}`
+    : question;
+  if (action === "send") {
+    // 新的点击取代此前排队的那一次：否则核验后直接发送本轮的同时，旧的排队项还会被
+    // watch 补发，用户一次点击就发出两条不同提问。
+    dropPendingQuickSend();
+    // 先核验后端真相：后端其实已收尾、只是前端锁尚未收敛时，这一次点击直接生效。
+    if (quickSendBlocked()) await verifyRunStatusOnce();
+    if (quickSendBlocked()) {
+      // 同一会话下连点同一个胶囊时不重复提示，避免叠出两条一模一样的 toast。
+      const alreadyQueuedSame =
+        pendingQuickSend?.content === nextContent &&
+        pendingQuickSend?.conversationId === conversationId.value;
+      pendingQuickSend = {
+        content: nextContent,
+        quickContext,
+        at: Date.now(),
+        conversationId: conversationId.value,
+        forceDataQueryAgent: forceDataQueryAgentOnce.value,
+      };
+      if (!alreadyQueuedSame) {
+        showToast("AI 正在收尾，已记下这条提问，就绪后自动发送", "info");
+      }
+      return;
+    }
+    await sendMessage({ content: nextContent, quickContext });
+  } else {
+    userInput.value = nextContent;
+  }
+};
+
+const handleGroundingAction = async (
+  payload: GroundingBlockedPayload | undefined,
+  action: GroundingBlockedAction,
+) => {
+  if (!payload || isProcessing.value || remoteRunBusy.value || recoveryLocking.value || sendLocked.value) return;
+  if (action.kind === "grounding_retry") {
+    const groundingAction = {
+      ...(action.payload || {}),
+      type: "retry",
+    };
+    await sendMessage({ content: payload.retry_query, groundingAction });
+    return;
+  }
+  if (action.kind === "grounding_method") {
+    const groundingAction = {
+      ...(action.payload || {}),
+      type: "method",
+    };
+    await sendMessage({ content: String(action.payload?.message || ""), groundingAction });
+    return;
+  }
+  if (action.kind === "send_message") {
+    await handleQuickQuestion(String(action.payload?.message || ""));
+  }
+};
+
+const portalLoadingTips = [
+  "正在为数据集唤醒大模型并进行资源初始化... 🧠",
+  "AI 正在深度解析物理表的业务语义与指标口径... 📊",
+  "首次加载需探索物理库表，耗时稍长（约15-30秒），请耐心稍候喔 ✨",
+  "正在基于大模型智构最适合该数据集的场景分析提问... 🚀",
+  "系统大模型正在努力推理计算中，马上就好... 🔄",
+];
+const currentPortalLoadingTip = ref(portalLoadingTips[0]);
+let portalLoadingTipTimer: ReturnType<typeof setInterval> | null = null;
+
+const startPortalLoadingTips = () => {
+  if (portalLoadingTipTimer) clearInterval(portalLoadingTipTimer);
+  let index = 0;
+  currentPortalLoadingTip.value = portalLoadingTips[0];
+  portalLoadingTipTimer = setInterval(() => {
+    index = (index + 1) % portalLoadingTips.length;
+    currentPortalLoadingTip.value = portalLoadingTips[index];
+  }, 4000);
+};
+
+const stopPortalLoadingTips = () => {
+  if (portalLoadingTipTimer) {
+    clearInterval(portalLoadingTipTimer);
+    portalLoadingTipTimer = null;
+  }
+};
+
+const {
+  showPortalDrawer,
+  portalNavigationPayload,
+  portalLoading,
+  portalBackgroundRefreshing,
+  portalKeepOpenOnQuestion,
+  portalPinned,
+  openPortalDrawer: rawOpenPortalDrawer,
+  closePortalDrawer,
+  refreshPortalNavigation,
+  handlePortalQuickQuestion,
+  recordDatasetMenuQuestionClick,
+  clearDatasetMenuQuestionClick,
+  prefetchPortalNavigationIfEligible,
+  fetchDatasetMenuNavigationPayload,
+  disposePortalTimers,
+} = useDatasetPortal({
+  getAuthHeaders: () => embedAuthHeaders() || {},
+  showToast,
+  onQuickQuestion: handleQuickQuestion,
+  hasDataQueryAgent,
+  keepOpenStorageKey: "embed_portal_keep_open",
+  pinStorageKey: "embed_portal_pinned",
+  onPortalLoadingChange: (loading) => {
+    if (loading) startPortalLoadingTips();
+    else stopPortalLoadingTips();
+  },
+});
+
+const openPortalDrawer = async () => {
+  if (isRoutingSettingsLocked.value && !agentHasCapability("data_query")) {
+    showToast("当前智能体不支持数据查询，无法打开数据门户", "warning");
+    return;
+  }
+  // 只后台补齐元数据集，不 await RAGFlow/Skills 整包（易 502 拖慢打开）
+  void ensureMountableMetadataDatasets();
+  await rawOpenPortalDrawer();
+};
+
+const {
+  showKnowledgePortal,
+  knowledgePinned,
+  knowledgeKeepOpenOnQuestion,
+  hallucinationCheckEnabled,
+  knowledgeSimilarityThreshold,
+  knowledgeVectorWeight,
+  knowledgeMetadataTopK,
+  knowledgeGeneratedAt,
+  datasets: knowledgeDatasets,
+  loadingDatasets: loadingKnowledgeDatasets,
+  datasetLoadError: knowledgeLoadError,
+  activeDatasetIds,
+  datasetRecommendations,
+  pinnedDatasetIds,
+  datasetDocuments,
+  documentRecommendations,
+  toggleDatasetPinned,
+  fetchDatasetDocuments,
+  fetchDocumentRecommendations,
+  fetchDatasets,
+  fetchRecommendations,
+  syncActiveDatasetsFromInput,
+  toggleDatasetActive,
+  openKnowledgePortal: rawOpenKnowledgePortal,
+  closeKnowledgePortal
+} = useKnowledgePortal({
+  showToast,
+  onOpenAnotherPortal: () => {
+    closePortalDrawer();
+  }
+});
+
+const openKnowledgePortal = async () => {
+  if (isRoutingSettingsLocked.value && !agentHasCapability("knowledge_base")) {
+    showToast("当前智能体不支持知识库能力，无法打开知识库中心", "warning");
+    return;
+  }
+  await rawOpenKnowledgePortal();
+};
+
+watch(showPortalDrawer, (val) => {
+  if (val) {
+    closeKnowledgePortal();
+  } else {
+    stopPortalLoadingTips();
+  }
+});
+
+// 监听上传文件的变更，保持知识库与数据集激活状态在抽屉卡片里是最新同步的
+watch(
+  () => chatInputRef.value?.uploadedFiles,
+  () => {
+    syncActiveDatasetsFromInput(chatInputRef.value);
+    syncActiveMetadataDatasetsFromInput(chatInputRef.value);
+  },
+  { deep: true }
+);
+
+
+
+// 钉住面板的让位宽度与右侧偏移统一由下方 pinnedDrawerLayout 计算。
+// 这里不再保留「各面板宽度 / 16 累加成 rem」的第二套真源：那套算法既没有上限
+// （两个面板就能把对话区挤成 0），又要临时拼一个 Tailwind 工具类交给模板——
+// 运行时拼出来的类名不会被静态扫描，构建产物里并不存在这条规则。
+
+// 响应式抽屉宽度 refs（由各抽屉组件通过 v-model:drawerWidth / v-model:canvasWidth 实时同步）
+const portalDrawerWidthReactive = ref(448);
+const knowledgeDrawerWidthReactive = ref(448);
+const workspaceDrawerWidthReactive = ref(448);
+const canvasPinnedWidthReactive = ref(520);
+const browserPanelWidthReactive = ref(520);
+const webPreviewPinned = ref(false);
+const webPreviewPanelWidthReactive = ref(448);
+
+const portalDrawerWidthPx = computed(() => {
+  if (!showPortalDrawer.value || !portalPinned.value || isMobile.value) return 0;
+  return portalDrawerWidthReactive.value;
+});
+
+const knowledgeDrawerWidthPx = computed(() => {
+  if (!showKnowledgePortal.value || !knowledgePinned.value || isMobile.value) return 0;
+  return knowledgeDrawerWidthReactive.value;
+});
+
+const canvasPinnedWidthPx = computed(() => {
+  if (!canvasVisible.value || !canvasPinned.value || isMobile.value) return 0;
+  return canvasPinnedWidthReactive.value;
+});
+
+/**
+ * 画布宽度的让位方位取决于停靠侧 —— 必须拆成左右两份，不能只用一份 marginRight。
+ *
+ * `canvasFromWorkspace` 为真（工作空间预览）时，EmbedChat 传 `dock-side="left"`，
+ * ChatCanvas 用 `fixed left-0 right-auto`：面板贴在视口左侧、不占布局空间。
+ * 此时若把画布宽度加进 `pinnedDrawerLayout` 的右侧让位（它只被当作 `marginRight` 用），
+ * 对话列的左边界仍停在 x=0，会被画布从左边切掉「画布宽」那一条，右侧还空出
+ * 等宽的死空白；把画布拖窄时最明显。
+ *
+ * 右停靠画布（普通画布）仍然走 marginRight，行为与改动前完全一致。
+ */
+const canvasRightDockWidthPx = computed(() =>
+  canvasFromWorkspace.value ? 0 : canvasPinnedWidthPx.value,
+);
+const canvasLeftDockWidthPx = computed(() =>
+  canvasFromWorkspace.value ? canvasPinnedWidthPx.value : 0,
+);
+
+const workspaceDrawerWidthPx = computed(() => {
+  if (!showWorkspaceDrawer.value || !workspacePinned.value || isMobile.value) return 0;
+  return workspaceDrawerWidthReactive.value;
+});
+
+const browserPanelWidthPx = computed(() => {
+  if (!browserPanelVisible.value || !browserPinned.value || isMobile.value) return 0;
+  return browserPanelWidthReactive.value;
+});
+
+const webPreviewPanelWidthPx = computed(() => {
+  if (!webPreviewVisible.value || !webPreviewPinned.value || isMobile.value) return 0;
+  return webPreviewPanelWidthReactive.value;
+});
+
+/**
+ * 钉住面板从右到左的顺序：多面板并排时，排在前面的更贴右边缘。
+ *
+ * 排序不是随意的：数据门户 / 知识库 / 画布 / 服务端浏览器目前把自己固定在
+ * `right-0`，不消费 pinnedDockRight，所以必须排在右侧；工作空间 / 记忆 /
+ * 网页预览吃 pinnedDockRight，排到它们左边，偏移会自然累加，谁也不会压住谁。
+ */
+const PINNED_DRAWER_ORDER = [
+  "portal",
+  "knowledge",
+  "canvas",
+  "browser",
+  "memory",
+  "workspace",
+  "webPreview",
+] as const;
+
+const pinnedDrawerPanelWidths = computed<Record<string, number>>(() => ({
+  webPreview: webPreviewPanelWidthPx.value,
+  browser: browserPanelWidthPx.value,
+  canvas: canvasRightDockWidthPx.value,
+  memory: showMemoryDrawer.value && memoryPinned.value && !isMobile.value ? 448 : 0,
+  workspace: workspaceDrawerWidthPx.value,
+  knowledge: knowledgeDrawerWidthPx.value,
+  portal: portalDrawerWidthPx.value,
+}));
+
+const pinnedDrawerLayout = computed(() =>
+  computePinnedDrawerLayout({
+    availableWidthPx: windowWidth.value,
+    panels: PINNED_DRAWER_ORDER.map((key) => ({
+      key,
+      widthPx: pinnedDrawerPanelWidths.value[key] ?? 0,
+    })),
+  }),
+);
+
+/** 各钉住面板的 right 偏移（px），直接进内联样式，不再拼 Tailwind 类名。 */
+const webPreviewDockRightPx = computed(
+  () => pinnedDrawerLayout.value.rightOffsetPx.webPreview ?? 0,
+);
+const workspacePinnedDockRightPx = computed(
+  () => pinnedDrawerLayout.value.rightOffsetPx.workspace ?? 0,
+);
+const memoryPinnedDockRightPx = computed(
+  () => pinnedDrawerLayout.value.rightOffsetPx.memory ?? 0,
+);
+
+const saveReportModalOverlayStyle = computed(() => ({
+  right: `${pinnedDrawerLayout.value.marginRightPx}px`,
+}));
+const saveReportModalOverlayClass = computed(() => {
+  const isPinned = (showPortalDrawer.value && portalPinned.value) || (showKnowledgePortal.value && knowledgePinned.value);
+  return isPinned ? 'right-[28rem]' : 'right-0';
+});
+
+/**
+ * 空间不足时把被挤掉的面板自动取消钉住（面板本身保持打开，退化为覆盖式）。
+ * 让位宽度已经按 kept 计算，若不取消，dropped 面板会压在被让位出来的对话区上。
+ */
+watch(
+  () => pinnedDrawerLayout.value.droppedKeys.join(","),
+  (joined) => {
+    if (!joined) return;
+    const dropped = new Set(joined.split(","));
+    const releases: Array<[key: string, label: string, state: { value: boolean }]> = [
+      ["webPreview", "网页预览", webPreviewPinned],
+      ["browser", "服务端浏览器", browserPinned],
+      ["canvas", "画布", canvasPinned],
+      ["memory", "记忆", memoryPinned],
+      ["workspace", "工作空间", workspacePinned],
+      ["knowledge", "知识库", knowledgePinned],
+      ["portal", "数据门户", portalPinned],
+    ];
+    const released: string[] = [];
+    for (const [key, label, state] of releases) {
+      if (state.value && dropped.has(key)) {
+        state.value = false;
+        released.push(label);
+      }
+    }
+    if (released.length > 0) {
+      showToast(`窗口宽度不足，已取消钉住：${released.join("、")}`, "info");
+    }
+  },
+);
+
+const pinnedDrawerMarginStyle = computed(() => {
+  const gutter = pinnedDrawerLayout.value.marginRightPx;
+  const leftPx = canvasLeftDockWidthPx.value;
+  const style: Record<string, string> = {};
+  if (gutter > 0) style.marginRight = `${gutter}px`;
+  // 左停靠画布贴在视口左侧，必须用 marginLeft 让位，否则对话会被它从左边切掉
+  if (leftPx > 0) style.marginLeft = `min(${leftPx}px, 100vw)`;
+  return style;
+});
+
+const refreshDatasetMenuNavigation = async (msg: Message) => {
+  if (datasetMenuLoading.value || isProcessing.value) {
+    return;
+  }
+  datasetMenuLoading.value = true;
+  isProcessing.value = true;
+  try {
+    const payload = await fetchDatasetMenuNavigationPayload(true);
+    msg.datasetNavigation = payload;
+    msg.content = payload?.markdown || "当前暂无可展示的数据集导航，请联系管理员开通数据权限。";
+    isProcessing.value = false;
+    if (payload?.llm_generation_failed) {
+      const detail = String(payload.llm_error_message || "").trim();
+      const hint = detail ? `：${detail}` : "";
+      showToast(`AI 模型暂不可用，仍为基础场景目录${hint}`, "error");
+    } else {
+      showToast("数据门户刷新成功", "success");
+    }
+    await nextTick();
+    scrollToBottom(true);
+  } catch (error) {
+    console.warn("Failed to refresh dataset menu navigation", error);
+    showToast("刷新数据门户失败，请稍后重试", "error");
+    if (msg.datasetNavigation) {
+      msg.datasetNavigation = { ...msg.datasetNavigation, _failed_at: new Date().toISOString() };
+    }
+  } finally {
+    datasetMenuLoading.value = false;
+    isProcessing.value = false;
+  }
+};
+
+const handleSaveReportFromMessage = (msg: Message) => {
+  const sql = resolveSavableSqlFromMessage(msg);
+  if (sql) openSaveReportModal(sql, msg);
+};
+
+/**
+ * 判断 SSE 日志是否属于「沙箱工作区准备」进度。
+ * prep 占位/最终行共用固定 id `workspace:sandbox`；Bash 触发以
+ * `workspace:sandbox:<tool_call_id>` 独立 id 挂到对应 Bash 卡片下方。
+ * 两类都要进同一套「拉起中/就绪/失败」toast 与状态刷新。
+ */
+function isSandboxPrewarmLogId(logId: string): boolean {
+  return logId === "workspace:sandbox" || logId.startsWith("workspace:sandbox:");
+}
+
+const addEmbedLogFromStream = (msg: Message, data: any) => {
+  if (!msg.logs) msg.logs = [];
+  const logId = data.id || Date.now() + Math.random();
+  const existingIdx = msg.logs.findIndex((l) => l.id === logId);
+  const title = data.title || "";
+  let category: LogEntry["category"] = data.category || "default";
+  if (category === "default") {
+    if (title.includes("路由")) category = "router";
+    else if (title.includes("SQL") || title.includes("sql") || title.includes("数据")) category = "sql";
+    else if (title.includes("知识") || title.includes("检索") || title.includes("引用") || title.includes("来源") || title.includes("分析")) category = "knowledge";
+    else if (title.includes("工具") || title.includes("调用")) category = "tool";
+    else if (title.includes("意图") || title.includes("轮次分类")) category = "intent";
+    else if (title.includes("模型")) category = "model";
+    else if (title.includes("权限") || title.includes("permission") || title.includes("确认")) category = "permission";
+  }
+  if (data.turn_type && category === "intent") {
+    msg.turnType = data.turn_type;
+    if (msg.isThinking && !timelineHasPending(msg.processTimeline)) {
+      msg.isThoughtExpanded = config.expandThoughts;
+    }
+  }
+  if (existingIdx > -1) {
+    const currentLog = msg.logs[existingIdx];
+    if (!currentLog) return;
+    const nextStatus = (data.status as LogEntry["status"]) || currentLog.status || "success";
+    // router_log 是路由结果摘要，携带的 execution_time_ms 是外层目标配置解析总耗时；
+    // 路由阶段已经记录过 route:target_selection 时，不能用这个总耗时覆盖子阶段耗时。
+    const preserveRouteSelectionDuration =
+      logId === "route:target_selection"
+      && category === "router"
+      && currentLog.execution_time_ms !== undefined
+      && currentLog.execution_time_ms !== null;
+    const preserveRouteSelectionTitle =
+      logId === "route:target_selection"
+      && category === "router"
+      && Boolean(currentLog.title);
+    const execution_time_ms =
+      (preserveRouteSelectionDuration ? currentLog.execution_time_ms : data.execution_time_ms) ??
+      (nextStatus !== "pending"
+        ? resolveStreamLogDurationMs(currentLog, data.execution_time_ms)
+        : currentLog.execution_time_ms);
+    msg.logs[existingIdx] = {
+      ...currentLog,
+      parent_id: data.parent_id ?? currentLog.parent_id,
+      title: preserveRouteSelectionTitle ? currentLog.title : (data.title || currentLog.title),
+      details: data.details ?? currentLog.details,
+      status: nextStatus,
+      error_reason: data.error_reason ?? currentLog.error_reason,
+      category: category !== "default" ? category : currentLog.category,
+      execution_time_ms: execution_time_ms ?? currentLog.execution_time_ms,
+      elapsed_time_ms: data.elapsed_time_ms ?? currentLog.elapsed_time_ms,
+      started_at: currentLog.started_at ?? (data.status === "pending" ? Date.now() : data.started_at),
+      subagent: data.subagent !== undefined
+        ? normalizeSubagentTraceMeta(data.subagent)
+        : currentLog.subagent,
+      tool_name: data.tool_name ?? currentLog.tool_name,
+      tool_args: data.tool_args ?? currentLog.tool_args,
+      tool_summary: data.tool_summary ?? currentLog.tool_summary,
+      model: data.model ?? currentLog.model,
+      temperature: data.temperature ?? currentLog.temperature,
+      tool_result_state: data.tool_result_state ?? currentLog.tool_result_state,
+      file_metadata: data.file_metadata ?? currentLog.file_metadata,
+      resolution_status: data.resolution_status ?? currentLog.resolution_status,
+      rowFilterApplied: data.row_filter_applied === true || currentLog.rowFilterApplied,
+    };
+    syncProcessTimelineLog(msg, {
+      ...data,
+      id: logId,
+      category: category !== "default" ? category : currentLog.category,
+      execution_time_ms: execution_time_ms ?? currentLog.execution_time_ms,
+      started_at: currentLog.started_at ?? data.started_at,
+    });
+    if (isSandboxPrewarmLogId(logId) && currentLog.status !== "pending" && nextStatus === "pending") {
+      showToast("正在拉起沙箱运行环境…", "info");
+      void refreshSandboxWorkspaceStatus();
+    } else if (isSandboxPrewarmLogId(logId) && currentLog.status === "pending" && nextStatus === "success") {
+      // 桌面端改成指向输入框浮标的气泡；移动端由 showSandboxWarmHint 内部回退 toast
+      showSandboxWarmHint({
+        title: "沙箱已就绪",
+        subtitle: "正在执行命令，点这里查看运行状态",
+        toastMessage: "沙箱环境已就绪，正在执行命令…",
+      });
+      void refreshSandboxWorkspaceStatus();
+    } else if (isSandboxPrewarmLogId(logId) && currentLog.status === "pending" && nextStatus === "error") {
+      showToast(data.error_reason || "沙箱环境启动失败", "error");
+      void refreshSandboxWorkspaceStatus();
+    }
+    return;
+  }
+  msg.logs.push({
+    id: logId,
+    parent_id: data.parent_id,
+    title: data.title || "Log Info",
+    details: data.details || "",
+    status: (data.status as any) || "success",
+    error_reason: data.error_reason,
+    isExpanded: false,
+    category,
+    execution_time_ms: data.execution_time_ms ?? null,
+    elapsed_time_ms: data.elapsed_time_ms ?? null,
+    started_at: data.status === "pending" ? Date.now() : (data.started_at ?? null),
+    subagent: normalizeSubagentTraceMeta(data.subagent),
+    tool_name: data.tool_name,
+    tool_args: data.tool_args,
+    tool_summary: data.tool_summary,
+    model: data.model,
+    temperature: data.temperature,
+    tool_result_state: data.tool_result_state,
+    file_metadata: data.file_metadata,
+    resolution_status: data.resolution_status,
+    rowFilterApplied: data.row_filter_applied === true,
+  });
+  syncProcessTimelineLog(msg, { ...data, id: logId, category }, category);
+  if (isSandboxPrewarmLogId(logId) && data.status === "pending") {
+    showToast("正在拉起沙箱运行环境…", "info");
+    void refreshSandboxWorkspaceStatus();
+  }
+};
+
+const applyReusableResultStatusEvent = (msg: Message, data: any): boolean => {
+  if (data?.type !== "reusable_result_status") return false;
+  // 复用本轮结束时可能还会保存一个新的结果；不能让 saved 覆盖 reused，
+  // 否则顶部“引用提示”会在回答完成后消失。
+  if (data.status === "saved" && msg.reusableResultStatus?.status === "reused") return true;
+  msg.reusableResultStatus = {
+    status: String(data.status || "fallback"),
+    resultId: data.result_id ? String(data.result_id) : null,
+    originName: data.origin_name ? String(data.origin_name) : null,
+  };
+  if (data.status === "reused") {
+    reusedReusableResultId.value = data.result_id ? String(data.result_id) : null;
+  }
+  return true;
+};
+
+const applyPermissionStreamEvent = (
+  msg: Message,
+  data: any,
+  options?: { replay?: boolean },
+) => {
+  // 历史重放（切回后的事件续显）只做过程展示，不触发「本轮结束」的交互收尾：事件日志
+  // 里含 run_status 终态帧（后端先发该帧、之后才落库），若重放也调 markOutputCompleted
+  // 就会在恢复器启动后 1 秒内把它自断，界面永久停在草稿。
+  const replay = options?.replay === true;
+  applyStreamTraceId(msg, data);
+  if (data.agent_name && !msg.agentName) msg.agentName = data.agent_name;
+  if (data.agent_display_name && !msg.agentDisplayName) msg.agentDisplayName = data.agent_display_name;
+
+  if (applyReusableResultStatusEvent(msg, data)) return;
+
+  if (data?.type === "run_status") {
+    // 恢复流（权限确认 / 外部执行）在末尾发射 run_status 作为终态，其 status 为
+    // success / rejected / error 等真实执行结果。按终态映射状态，避免把“用户拒绝”
+    // 或“执行失败”错误显示为已完成（拒绝/失败必须保留其自身语义）。
+    if (msg.pendingPermission) {
+      msg.pendingPermission.status =
+        data.status === "awaiting_permission"
+          ? "pending"
+          : data.status === "rejected" || data.status === "denied"
+          ? "rejected"
+          : data.status === "error" || data.status === "failed"
+            ? "error"
+            : "approved";
+      if (data.status === "awaiting_permission") msg.pendingPermission.expanded = true;
+    }
+    if (msg.pendingExternalExecution) {
+      msg.pendingExternalExecution.status =
+        data.status === "error" || data.status === "failed" ? "error" : "completed";
+    }
+    msg.isThinking = false;
+    if (!replay) {
+      clearStallTimer();
+      showStalledPrompt.value = false;
+      markOutputCompleted();
+    }
+    if (data.status === "success") {
+      (msg as any).status = "success";
+    }
+    return;
+  }
+
+  if (applyChatBIInsightEvent(msg, data) || applyChatBIMetadataGuideEvent(msg, data) || applyAgentHandoffEvent(msg, data)) return;
+
+  if (dispatchAgentscopeStreamEvent(msg, data, addEmbedLogFromStream, messages.value, handleBashEnvEvent)) {
+    if (data.type === "error") {
+      if (msg.pendingPermission) msg.pendingPermission.status = "error";
+      if (msg.pendingExternalExecution) msg.pendingExternalExecution.status = "error";
+      msg.isThinking = false;
+      applyStreamErrorMessage(msg, data);
+    } else if (
+      data.content &&
+      data.type !== "reasoning_content" &&
+      data.type !== "process_narration" &&
+      data.type !== "process_narration_commit" &&
+      data.type !== "process_narration_promote" &&
+      data.type !== "answer_delta" &&
+      data.type !== "retraction"
+    ) {
+      const piece = sanitizeStreamContent(String(data.content || ""));
+      if (piece) {
+        if (msg.isThoughtExpanded && !msg.content && !timelineHasPending(msg.processTimeline)) {
+          msg.isThoughtExpanded = false;
+        }
+        appendAssistantBodyDelta(msg, piece);
+        if (msg.isThinking) msg.isThinking = false;
+        resetStallTimer();
+      }
+    }
+    return;
+  }
+
+  if (data.type === "log") {
+    addEmbedLogFromStream(msg, data);
+  } else if (mergeStreamCitations(msg, data)) {
+    // Citations are merged and de-duplicated by the shared stream normalizer.
+  } else if (data.type === "router_log") {
+    const agentName = data.selected_agent || "Unknown";
+    const conf = data.confidence !== undefined ? `(置信度: ${data.confidence})` : "";
+    const routerId = data.id || "route:target_selection";
+    addEmbedLogFromStream(msg, {
+      id: routerId,
+      title: "目标专家匹配完成",
+      details: `已完成目标专家匹配。\n目标专家: ${agentName} ${conf}`.trim(),
+      status: "success",
+      isRouter: true,
+      category: "router",
+      parent_id: data.parent_id || "route:target_config",
+      execution_time_ms: data.execution_time_ms ?? null,
+    });
+  } else if (data.type === "meta") {
+    if (data.agent_name) msg.agentName = data.agent_name;
+    if (data.agent_type) msg.agentType = data.agent_type;
+    if (data.agent_display_name) msg.agentDisplayName = data.agent_display_name;
+    if (data.turn_type) msg.turnType = data.turn_type;
+    if (data.prompt_tokens !== undefined) msg.prompt_tokens = data.prompt_tokens;
+    if (data.completion_tokens !== undefined) msg.completion_tokens = data.completion_tokens;
+    if (data.has_data_output) msg.hasDataOutput = true;
+    if (data.permission_notice) msg.permissionNotice = data.permission_notice;
+  } else if (data.type === "error") {
+    if (msg.pendingPermission) msg.pendingPermission.status = "error";
+    msg.isThinking = false;
+    applyStreamErrorMessage(msg, data);
+  } else if (data.content) {
+    const piece = sanitizeStreamContent(String(data.content || ""));
+    if (piece) {
+      if (msg.isThoughtExpanded && !msg.content && !timelineHasPending(msg.processTimeline)) {
+        msg.isThoughtExpanded = false;
+      }
+      appendAssistantBodyDelta(msg, piece);
+      if (msg.isThinking) msg.isThinking = false;
+      resetStallTimer();
+    }
+  }
+};
+
+const submitPendingExternalExecution = async (msg: Message) => {
+  const pending = msg.pendingExternalExecution;
+  if (!pending || pending.status !== "pending" || pending.isSubmitting) return;
+  pending.isSubmitting = true;
+  isProcessing.value = true;
+  msg.isThinking = true;
+  startThoughtTimer(msg);
+  msg.isThoughtExpanded = config.expandThoughts;
+  msg.thinkingText = "正在提交外部执行结果...";
+  resetStallTimer();
+
+  try {
+    await resumeExternalExecutionStream({
+      requestId: pending.external_execution_request_id,
+      toolCall: pending.tool_call,
+      output: pending.outputDraft || "(empty external result)",
+      headers: embedAuthHeaders() || {},
+      credentials: "include",
+      onEvent: (data) => applyPermissionStreamEvent(msg, data),
+    });
+  } catch (error: any) {
+    pending.status = "error";
+    msg.content += `\n[外部执行恢复失败: ${error.message || "Unknown error"}]`;
+  } finally {
+    pending.isSubmitting = false;
+    isProcessing.value = msg.pendingExternalExecution?.status === "pending" || msg.pendingPermission?.status === "pending";
+    msg.isThinking = false;
+    clearStallTimer();
+    showStalledPrompt.value = false;
+    if (thoughtTimer) {
+      clearInterval(thoughtTimer);
+      thoughtTimer = null;
+    }
+    if (msg.logs) {
+      msg.logs.forEach((l) => {
+        if (l.status === "pending" && l.category !== "permission" && l.category !== "external") l.status = "success";
+      });
+    }
+    scrollToBottom();
+    nextTick(() => {
+      if (!isMobile.value) chatInputRef.value?.focus();
+    });
+  }
+};
+
+const submitBusinessConfirmation = async (
+  msg: Message,
+  payload: { confirmed: boolean; fields: BusinessConfirmationField[] },
+) => {
+  const card = msg.businessConfirmation;
+  if (!card || card.status !== "pending" || isProcessing.value) return;
+  const content = buildBusinessConfirmationUserMessage(
+    payload.confirmed,
+    card.confirmation_id,
+    payload.fields,
+  );
+  card.fields = payload.fields.map((field) => ({ ...field }));
+  card.status = "submitted";
+  card.decision = payload.confirmed ? "confirmed" : "cancelled";
+  userInput.value = content;
+  await sendMessage();
+};
+
+const submitUserQuestion = async (
+  msg: Message,
+  payload: { selectedOptionIds: string[]; customInput: string; cancelled: boolean },
+) => {
+  const card = msg.userQuestion;
+  if (!card || card.status !== "pending" || isProcessing.value) return;
+  const content = buildUserQuestionUserMessage(
+    card.question_id,
+    payload.selectedOptionIds,
+    payload.customInput,
+    payload.cancelled,
+    card.question,
+    card.options,
+  );
+  card.selected_option_ids = [...payload.selectedOptionIds];
+  card.custom_input = payload.customInput;
+  card.status = payload.cancelled ? "cancelled" : "submitted";
+  // 同步收尾时间线步骤，否则提交后该步骤仍显示「进行中」呼吸灯
+  markUserQuestionTimelineResolved(msg.processTimeline, card.question_id);
+  userInput.value = content;
+  await sendMessage();
+};
+
+const parseFetchErrorMessage = async (response: Response): Promise<string> => {
+  let errorMessage = response.statusText || `HTTP ${response.status}`;
+  try {
+    const errorText = await response.text();
+    if (errorText) {
+      try {
+        const errorJson = JSON.parse(errorText);
+        if (errorJson?.detail) {
+          if (typeof errorJson.detail === "string") {
+            errorMessage = errorJson.detail;
+          } else if (Array.isArray(errorJson.detail)) {
+            errorMessage = errorJson.detail
+              .map((d: any) => d.msg || (typeof d === "string" ? d : JSON.stringify(d)))
+              .join("; ");
+          } else if (typeof errorJson.detail === "object" && errorJson.detail.message) {
+            errorMessage = String(errorJson.detail.message);
+          } else {
+            errorMessage = JSON.stringify(errorJson.detail);
+          }
+        } else if (errorJson?.message) {
+          errorMessage = String(errorJson.message);
+        } else {
+          errorMessage = errorText;
+        }
+      } catch {
+        errorMessage = errorText;
+      }
+    }
+  } catch {
+    // ignore stream read error
+  }
+  return errorMessage;
+};
+
+const confirmPendingPermission = async (msg: Message, confirmed: boolean) => {
+  const pending = msg.pendingPermission;
+  if (!pending || pending.status !== "pending" || pending.isSubmitting) return;
+  pending.isSubmitting = true;
+  isProcessing.value = true;
+  if (confirmed) {
+    msg.isThinking = true;
+    startThoughtTimer(msg);
+    msg.isThoughtExpanded = config.expandThoughts;
+    msg.thinkingText = "正在继续执行...";
+    resetStallTimer();
+  }
+
+  try {
+    const response = await fetch(`/api/v1/chat/permissions/${pending.permission_request_id}/confirm`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(embedAuthHeaders() || {}),
+      },
+      body: JSON.stringify({ confirmed }),
+      credentials: "include",
+    });
+    if (!response.ok) throw new Error(await parseFetchErrorMessage(response));
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No body");
+    const decoder = new TextDecoder();
+    const parser = createSseLineParser();
+    let isPermissionStreamDone = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const dataLines = parser.feed(decoder.decode(value, { stream: true }));
+      for (const dataStr of dataLines) {
+        if (dataStr === "[DONE]") {
+          isPermissionStreamDone = true;
+          break;
+        }
+        applyPermissionStreamEvent(msg, JSON.parse(dataStr));
+      }
+      scrollToBottom();
+      if (isPermissionStreamDone) {
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore
+        }
+        break;
+      }
+    }
+    for (const dataStr of parser.flush()) {
+      if (dataStr !== "[DONE]") applyPermissionStreamEvent(msg, JSON.parse(dataStr));
+    }
+  } catch (error: any) {
+    pending.status = "error";
+    msg.content += `\n[工具确认失败: ${error.message || "Unknown error"}]`;
+  } finally {
+    pending.isSubmitting = false;
+    isProcessing.value = msg.pendingPermission?.status === "pending" || msg.pendingExternalExecution?.status === "pending";
+    msg.isThinking = false;
+    clearStallTimer();
+    showStalledPrompt.value = false;
+    if (thoughtTimer) {
+      clearInterval(thoughtTimer);
+      thoughtTimer = null;
+    }
+    if (msg.logs) {
+      msg.logs.forEach((l) => {
+        if (l.status === "pending" && l.category !== "permission") l.status = "success";
+      });
+    }
+    scrollToBottom();
+    nextTick(() => {
+      if (!isMobile.value) chatInputRef.value?.focus();
+    });
+  }
+};
+
+const tryLocalChartOptionPatch = (userText: string): boolean => {
+  const q = userText.toLowerCase().trim();
+  let newType: 'line' | 'bar' | 'pie' | null = null;
+  if (/改(成|为)折线图/.test(q) || /换成折线/.test(q)) {
+    newType = 'line';
+  } else if (/改(成|为)柱状图/.test(q) || /换成柱状/.test(q)) {
+    newType = 'bar';
+  } else if (/改(成|为)饼图/.test(q) || /换成饼图/.test(q)) {
+    newType = 'pie';
+  }
+
+  const isRedPatch = /标红/.test(q);
+
+  if (!newType && !isRedPatch) {
+    return false;
+  }
+
+  // Find the last agent message with a chart block
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i];
+    if (!msg) continue;
+    if (msg.role === 'agent' && msg.content) {
+      const chartRegex = /(<chart>([\s\S]*?)<\/chart>)|(```(?:chart|echarts)\s*([\s\S]*?)```)/gi;
+      const match = chartRegex.exec(msg.content);
+      if (match) {
+        const fullMatch = match[0];
+        const jsonContent = (match[2] || match[4] || "").trim();
+        if (!jsonContent) continue;
+        try {
+          const option = JSON.parse(jsonContent);
+          if (option.series) {
+            if (newType) {
+              if (Array.isArray(option.series)) {
+                option.series = option.series.map((s: any) => ({ ...s, type: newType }));
+              } else if (typeof option.series === 'object') {
+                option.series.type = newType;
+              }
+              if (newType === 'pie') {
+                delete option.xAxis;
+                delete option.yAxis;
+              }
+            }
+            if (isRedPatch) {
+              if (Array.isArray(option.series)) {
+                option.series = option.series.map((s: any) => ({
+                  ...s,
+                  itemStyle: { ...s.itemStyle, color: '#ef4444' }
+                }));
+              } else if (typeof option.series === 'object') {
+                option.series.itemStyle = { ...option.series.itemStyle, color: '#ef4444' };
+              }
+            }
+
+            const updatedJson = JSON.stringify(option, null, 2);
+            let updatedMatch = "";
+            if (match[1]) {
+              updatedMatch = `<chart>\n${updatedJson}\n</chart>`;
+            } else {
+              updatedMatch = `\`\`\`chart\n${updatedJson}\n\`\`\``;
+            }
+
+            msg.content = msg.content.replace(fullMatch, updatedMatch);
+            messages.value.push({
+              id: Date.now(),
+              role: "user",
+              content: userText,
+              timestamp: new Date().toISOString(),
+            });
+            messages.value.push({
+              id: Date.now() + 1,
+              role: "agent",
+              content: `✨ 已为您本地秒级重绘图表，将图表形式调整为：${newType === 'line' ? '折线图' : newType === 'bar' ? '柱状图' : newType === 'pie' ? '饼图' : '标红调整'}。`,
+              timestamp: new Date().toISOString(),
+            });
+            return true;
+          }
+        } catch (err) {
+          console.error("Failed to parse or patch ECharts option locally:", err);
+        }
+      }
+    }
+  }
+  return false;
+};
+
+const captureSendSnapshot = (overrides: ChatSendOverrides = {}): ChatSendSnapshot => ({
+  content: String(overrides.content ?? userInput.value).trim(),
+  files: overrides.files
+    ? overrides.files.map((file) => ({ ...file }))
+    : (chatInputRef.value?.uploadedFiles ? Array.from(chatInputRef.value.uploadedFiles) as ChatFile[] : [])
+        .map((file) => ({ ...file })),
+  clientRequestId: overrides.clientRequestId || createClientRequestId(),
+  groundingAction: overrides.groundingAction ? { ...overrides.groundingAction } : undefined,
+  reusableResultId: overrides.reusableResultId !== undefined
+    ? (overrides.reusableResultId || undefined)
+    : (selectedReusableResultId.value || undefined),
+  quickContext: overrides.quickContext ? { ...overrides.quickContext } : undefined,
+});
+
+const sendPreparedMessage = async (
+  prepare: () => Promise<ChatSendSnapshot | null>,
+) => runSendExclusive(async () => {
+  if (isProcessing.value || remoteRunBusy.value || recoveryLocking.value) return;
+  const snapshot = await prepare();
+  if (!snapshot) return;
+  return sendMessageInternal(snapshot);
+});
+
+const sendMessage = async (overrides: ChatSendOverrides = {}) => runSendExclusive(async () => {
+  if (isProcessing.value || remoteRunBusy.value || recoveryLocking.value) return;
+  return sendMessageInternal(captureSendSnapshot(overrides));
+});
+
+const sendMessageInternal = async (snapshot: ChatSendSnapshot) => {
+  const { content, files } = snapshot;
+  if ((!content && files.length === 0) || isProcessing.value || remoteRunBusy.value || recoveryLocking.value) return;
+
+  // 一旦有真正的发送落地，排队的快捷提问即视为已被用户后续操作取代，避免重复发送。
+  // 若这次落地并非那次排队补发本身（补发会先自行取走队列），则连同它 arm 的
+  // 「强制走查数」意图一起撤销，避免劫持用户的手动提问。
+  dropPendingQuickSend();
+  clearRunStatusNudge();
+
+  // 尽早消费「强制查数智能体」标记，避免中途 return 后泄漏到下一轮普通提问
+  const forcedDataAgentIdForTurn = forceDataQueryAgentOnce.value ? resolvePreferredDataQueryAgentId() : "";
+  forceDataQueryAgentOnce.value = false;
+  const turnMetadataDatasetIds = [...activeMetadataDatasetIds.value];
+
+  const quotaBlock = await ensureCanSend();
+  if (quotaBlock) {
+    showToast(quotaBlock, "error");
+    return;
+  }
+
+  if (files.length === 0 && tryLocalChartOptionPatch(content)) {
+    userInput.value = "";
+    showCommandMenu.value = false;
+    nextTick(() => scrollToBottom(true));
+    return;
+  }
+
+  const messageContent = files.length > 0 ? appendAttachmentContext(content, files) : content;
+
+  // 全局兜底：确保一定存在会话 ID
+  if (!conversationId.value) {
+      generateNewConversation();
+  }
+
+  if (await handleSystemCommand(content)) {
+    userInput.value = "";
+    showCommandMenu.value = false;
+    return;
+  }
+  userInput.value = "";
+  showCommandMenu.value = false;
+
+  // 1. User Message（content 含 --- 分隔的隐式系统指令，气泡内分区展示）
+  messages.value.push({
+    id: Date.now(),
+    role: "user",
+    content: messageContent,
+    files: files.length > 0 ? files : undefined,
+    timestamp: new Date().toISOString(),
+  });
+  if (chatInputRef.value) {
+    chatInputRef.value.uploadedFiles = [];
+  }
+  isProcessing.value = true;
+  resetStallTimer();
+  // 2. Agent Placeholder
+  const agentMsg = ref<Message>({
+    id: Date.now() + 1,
+    role: "agent",
+    content: "",
+    isThinking: true,
+    thinkingText: "正在连接服务…",
+    logs: [],
+    thoughtStartTime: Date.now(),
+    thoughtDuration: "0.0",
+    isThoughtExpanded: config.expandThoughts,
+    isCitationsExpanded: false,
+    timestamp: new Date().toISOString(),
+  });
+  messages.value.push(agentMsg.value);
+  startStalePendingTimer(agentMsg.value);
+  // 新一轮发送：恢复自动跟随（避免上一轮「向上滚动」导致本轮仍不跟底）
+  autoScrollEnabled.value = true;
+  showNewMessageHint.value = false;
+  await nextTick();
+  scrollToBottom(true);
+  requestAnimationFrame(() => scrollToBottom(true));
+  const ltmIgnoredVal = ignoreLtmThisTurn.value;
+  ignoreLtmThisTurn.value = false;
+  activeLtmPreference.value = null;
+
+  // Start thought timer
+  startThoughtTimer(agentMsg.value);
+  // 3. API Call
+  // SSE 可能因切后台/网络变化提前结束；在状态接口确认释放前继续阻止新一轮发送。
+  // 用 markRunStarted 而非裸置位：必须同时复位上一轮的「输出已完成」，
+  // 否则上一轮的完成态会继续压制本轮恢复（切走再切回时恢复器不启动）。
+  markRunStarted();
+  abortController = new AbortController();
+  streamInFlight = true;
+  // 新一轮开始：续显游标整体归零。后端在 producer 启动时会清空上一轮日志并让 _seq
+  // 从 1 重新计数，所以这里必须同步归零——保留 lastSeq 会让本轮事件全部落在
+  // after_seq 之内而被丢弃；保留 traceId 则会把上一轮的残留事件放行进来。
+  streamReplayCursor.value = { lastSeq: 0, traceId: "" };
+  streamReplayPrimed = false;
+  recoverySyncedEventCount = 0;
+  // 本次流的会话归属：收尾副作用（落定时间线、置完成态、写全局锁态）只对「仍是当前
+  // 会话」生效。切走之后在别的会话里收尾，会把那个会话正在 pending 的步骤落定、并用
+  // 本轮的权限态去写全局 isProcessing——界面与服务端真相相反。
+  const streamConversationId = conversationId.value;
+  // 登记在途草稿：供节流写入与卸载前强制落盘使用（重建后据此还原已输出的思考）。
+  activeStreamDraft = { conversationId: conversationId.value, msg: agentMsg.value, lastAppliedSeq: 0 };
+  // 新一轮提问：复位上一轮的关闭标记与完成态，恢复提示重新可用。
+  resetRecoveryCard();
+  // 立刻落盘一次（即使此时还没有任何可见输出）：快照会记下本轮提问，覆盖
+  // 「发出后到首片正文/时间线到达之前刷新」这段最容易丢提问的窗口。
+  maybePersistStreamSnapshot(true);
+  // 首片正文立即显示，后续正文按帧合并更新。
+  let pendingContentBuffer = "";
+  let contentRafId: number | null = null;
+
+  const flushContentBuffer = () => {
+    if (pendingContentBuffer) {
+      appendAssistantBodyDelta(agentMsg.value, pendingContentBuffer);
+      pendingContentBuffer = "";
+      scrollToBottom();
+    }
+    if (contentRafId !== null) {
+      cancelAnimationFrame(contentRafId);
+      contentRafId = null;
+    }
+    // 每个流事件都会走到这里：按节流频率把草稿落盘，保证切走/刷新后能还原。
+    maybePersistStreamSnapshot();
+  };
+
+  const queueContentDelta = (piece: string) => {
+    if (!piece) return;
+    // 首片正文立即显示。
+    if (!agentMsg.value.content && !pendingContentBuffer) {
+      appendAssistantBodyDelta(agentMsg.value, piece);
+      scrollToBottom();
+      return;
+    }
+    pendingContentBuffer += piece;
+    if (contentRafId === null) {
+      contentRafId = requestAnimationFrame(flushContentBuffer);
+    }
+  };
+
+  // 正文在公共 dispatcher 之前消费，避免 answer_delta 绕过缓冲。
+  // 撤回使缓冲失效；其他事件先刷出正文，保持 SSE 顺序。
+  const handleBufferedBodyEvent = (data: Record<string, any>): boolean => {
+    if (data.type === "retraction") {
+      pendingContentBuffer = "";
+      if (contentRafId !== null) {
+        cancelAnimationFrame(contentRafId);
+        contentRafId = null;
+      }
+      return false;
+    }
+    if (data.type === "answer" || data.type === "answer_delta") {
+      const piece = data.type === "answer_delta"
+        ? String(data.content || "")
+        : sanitizeStreamContent(String(data.content || ""));
+      if (piece) {
+        queueContentDelta(piece);
+        agentMsg.value.isThinking = false;
+      }
+      return true;
+    }
+    if (data.type) flushContentBuffer();
+    return false;
+  };
+
+  try {
+    const mountedKnowledgeDatasetIds = resourceScope.value.knowledge_bases.map((item: any) => String(item.id || '').trim()).filter(Boolean);
+    const knowledgeDatasetIds = mountedKnowledgeDatasetIds.length > 0 ? mountedKnowledgeDatasetIds : collectKnowledgeDatasetIds();
+    const body: Record<string, unknown> = {
+      messages: buildOutboundMessages(),
+      stream: true,
+      agent_id: forcedDataAgentIdForTurn || ((config.routingMode === "expert" && config.expertAgentId) ? config.expertAgentId : (config.overrideAgentId || config.agentId)),
+      enable_multi_agent: config.enableMultiAgent,
+      conversation_id: conversationId.value,
+      execution_options: {
+        injected_context: injectedContext.value,
+        // 智能体版本禁止手动切换模型时不接受模型覆盖，避免绕过版本配置
+        model: effectiveOverrideModel.value || undefined,
+        enable_sql_plan: config.enableSqlPlan,
+        grounding_enabled: config.enableGrounding,
+        grounding_block_mode: config.groundingBlockMode,
+        browser_session_id: browserSessionId.value || undefined,
+        ignore_ltm: ltmIgnoredVal,
+        hallucination_check: hallucinationCheckEnabled.value || undefined,
+        knowledge_ragflow_similarity_threshold: knowledgeSimilarityThreshold.value,
+        knowledge_ragflow_vector_weight: knowledgeVectorWeight.value,
+        knowledge_ragflow_metadata_top_k: knowledgeMetadataTopK.value,
+        resource_scope: resourceScope.value,
+      },
+      permission_options: {
+        approval_mode: config.approvalMode || "ask",
+      },
+    };
+    // 模型切换入口被版本配置禁用时，思考 / 推理强度 / 温度覆盖同样不下发：
+    // 它们都来自模型切换面板，禁用后残留的覆盖值会与版本配置的模型不匹配。
+    if (manualModelSwitchAllowed.value && thinkingEnableOverride.value !== null) {
+      (body.execution_options as Record<string, unknown>).thinking_enable = thinkingEnableOverride.value;
+    }
+    if (manualModelSwitchAllowed.value && reasoningEffortOverride.value !== null) {
+      (body.execution_options as Record<string, unknown>).reasoning_effort = reasoningEffortOverride.value;
+    }
+    if (manualModelSwitchAllowed.value && temperatureOverride.value !== null && temperatureOverride.value !== undefined) {
+      (body.execution_options as Record<string, unknown>).temperature = temperatureOverride.value;
+    }
+    if (knowledgeDatasetIds.length > 0) {
+      body.knowledge_dataset_ids = knowledgeDatasetIds;
+    }
+    if (turnMetadataDatasetIds.length > 0) {
+      body.metadata_dataset_ids = turnMetadataDatasetIds;
+    }
+    if (snapshot.groundingAction) body.grounding_action = snapshot.groundingAction;
+    if (snapshot.reusableResultId) body.reusable_result_id = snapshot.reusableResultId;
+    if (snapshot.quickContext) body.quick_context = { ...snapshot.quickContext };
+    body.client_request_id = snapshot.clientRequestId;
+    // 结果选择是一次性的：请求体已经捕获后立即消费，避免下一轮普通提问误带旧 ID。
+    if (snapshot.reusableResultId) selectedReusableResultId.value = null;
+    const headers: any = {
+      "Content-Type": "application/json",
+    };
+    if (config.token) {
+      headers["Authorization"] = `Bearer ${config.token}`;
+      headers["X-API-Key"] = config.token;
+    }
+    const response = await fetch("/api/v1/chat/completions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: abortController.signal,
+      credentials: "include"
+    });
+    if (!response.ok) {
+      const errorMessage = await parseFetchErrorMessage(response);
+      // 403 有多种来源（会话归属、智能体权限…），只认后端那条「模型越权」文案：
+      // 此时除既有错误提示外，清掉本机覆盖回落到智能体默认模型，避免每次都撞同一堵墙。
+      if (response.status === 403 && effectiveOverrideModel.value && errorMessage.includes("可用范围")) {
+        clearLocalModelOverride();
+      }
+      throw new Error(errorMessage);
+    }
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    if (!reader) throw new Error("No body");
+
+    const sseLineParser = createSseLineParser();
+
+    let isChatStreamDone = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const dataLines = sseLineParser.feed(decoder.decode(value, { stream: true }));
+
+      for (const dataStr of dataLines) {
+        if (dataStr === "[DONE]") {
+          isChatStreamDone = true;
+          break;
+        }
+
+        // Any SSE data frame means the stream is alive. Keep the fallback
+        // prompt hidden while logs, narration, tool events, or answer deltas
+        // continue to arrive; it should only appear during a true quiet gap.
+        resetStallTimer();
+
+        try {
+          const data = JSON.parse(dataStr);
+          if (data?.type === "keepalive") {
+            // 后端静默期心跳帧：仅用于续命 Stall 计时与连接保活，无业务负载。
+            continue;
+          }
+          applyStreamTraceId(agentMsg.value, data);
+          if (handleBufferedBodyEvent(data)) {
+            // 已进入正文缓冲。
+          } else if (data.type === "duplicate_request") {
+            flushContentBuffer();
+            agentMsg.value.isThinking = false;
+            (agentMsg.value as any).status = "duplicate_request";
+            agentMsg.value.content = String(data.content || "相同发送请求已提交，请等待原任务完成。\n");
+            markRunStarted();
+            void refreshCurrentRunStatus();
+          } else if (data.type === "run_status") {
+            flushContentBuffer();
+            agentMsg.value.isThinking = false;
+            clearStallTimer();
+            showStalledPrompt.value = false;
+            markOutputCompleted();
+            if (data.status === "success") {
+              (agentMsg.value as any).status = "success";
+            }
+          } else if (data.type === "browser_session") {
+            const targetSessionId = String(data.session_id || "").trim();
+            if (targetSessionId) {
+              const openingGeneration = browserOpenGeneration;
+              void attachBrowserSession(
+                targetSessionId,
+                data.approval_mode,
+                openingGeneration,
+              );
+            }
+          } else if (data.type === "browser_refresh") {
+            const targetSessionId = String(data.session_id || "").trim();
+            if (targetSessionId) {
+              if (!browserPanelVisible.value || browserSessionId.value !== targetSessionId) {
+                // 兜底自动唤醒：若收到浏览器操作信号但面板未开或会话未附着，自动唤起并附着面板
+                void attachBrowserSession(
+                  targetSessionId,
+                  undefined,
+                  browserOpenGeneration,
+                );
+              }
+              if (targetSessionId === String(browserSessionId.value || "")) {
+                browserRefreshSignal.value += 1;
+              }
+            }
+          } else if (applyReusableResultStatusEvent(agentMsg.value, data)) {
+            // 结果保存/复用状态只更新消息元数据，不改变回答正文。
+          } else if (data.type === "log") {
+            if (agentMsg.value.isThinking && data.title) {
+              agentMsg.value.thinkingText = `正在${data.title}...`;
+            }
+            addEmbedLogFromStream(agentMsg.value, data);
+          } else if (mergeStreamCitations(agentMsg.value, data)) {
+            // Citations are merged and de-duplicated by the shared stream normalizer.
+          } else if (data.type === "router_log") {
+            const agentName = data.selected_agent || "Unknown";
+            const conf = data.confidence !== undefined ? `(置信度: ${data.confidence})` : "";
+            const routerId = data.id || "route:target_selection";
+            const routerDetails = `已完成目标专家匹配。\n目标专家: ${agentName} ${conf}`.trim();
+            addEmbedLogFromStream(agentMsg.value, {
+              id: routerId,
+              title: "目标专家匹配完成",
+              details: routerDetails,
+              status: "success",
+              isRouter: true,
+              category: "router",
+              parent_id: data.parent_id || "route:target_config",
+              execution_time_ms: data.execution_time_ms ?? null,
+            });
+          } else if (applyChatBIInsightEvent(agentMsg.value, data) || applyChatBIMetadataGuideEvent(agentMsg.value, data) || applyAgentHandoffEvent(agentMsg.value, data)) {
+            // Additive ChatBI evidence event; answer content stays unchanged.
+          } else if (dispatchAgentscopeStreamEvent(agentMsg.value, data, addEmbedLogFromStream, messages.value, handleBashEnvEvent)) {
+            if (
+              data.type === "permission_required" && thoughtTimer
+            ) {
+              clearInterval(thoughtTimer);
+              thoughtTimer = null;
+            }
+          } else if (data.type === "meta") {
+            if (data.agent_name) {
+              agentMsg.value.agentName = data.agent_name;
+              if (data.agent_type) agentMsg.value.agentType = data.agent_type;
+              if (data.agent_display_name) {
+                  agentMsg.value.agentDisplayName = data.agent_display_name;
+              }
+            }
+            if (data.turn_type) {
+              agentMsg.value.turnType = data.turn_type;
+              if (data.thought_expanded_default === true) {
+                agentMsg.value.isThoughtExpanded = true;
+              } else if (typeof data.thought_expanded_default !== "boolean") {
+                agentMsg.value.isThoughtExpanded = config.expandThoughts;
+              }
+            }
+            if (data.prompt_tokens !== undefined) {
+              agentMsg.value.prompt_tokens = data.prompt_tokens;
+            }
+            if (data.completion_tokens !== undefined) {
+              agentMsg.value.completion_tokens = data.completion_tokens;
+            }
+            if (data.has_data_output) {
+              agentMsg.value.hasDataOutput = true;
+            }
+            if (data.permission_notice) {
+              agentMsg.value.permissionNotice = data.permission_notice;
+            }
+            if (data.ltm_applied && data.ltm_data) {
+              if (!ltmAlertedInSession.value) {
+                activeLtmPreference.value = data.ltm_data;
+                ltmAlertedInSession.value = true;
+              }
+            }
+          } else if (data.type === "error" || data.status === "error") {
+            // 错误块可能只带 status:"error" + content；必须先于 content 分支，
+            // 否则错误文案会被当成正常回答增量渲染，且永远不进入错误态。
+            flushContentBuffer();
+            agentMsg.value.isThinking = false;
+            (agentMsg.value as any).status = "error";
+            applyStreamErrorMessage(agentMsg.value, data);
+          } else if (data.type === "answer" || data.type === "answer_delta" || data.content) {
+            const piece = sanitizeStreamContent(String(data.content || ""));
+            if (piece) {
+              if (
+                agentMsg.value.isThoughtExpanded
+                && !agentMsg.value.content
+                && !pendingContentBuffer
+                && !timelineHasPending(agentMsg.value.processTimeline)
+              ) {
+                agentMsg.value.isThoughtExpanded = false;
+              }
+              queueContentDelta(piece);
+              resetStallTimer();
+              if (agentMsg.value.isThinking) {
+                agentMsg.value.isThinking = false;
+              }
+            }
+          } else if (data.status === "generating") {
+            if (agentMsg.value.content || pendingContentBuffer) {
+              agentMsg.value.isThinking = false;
+            }
+          }
+          if (!pendingContentBuffer) {
+            scrollToBottom();
+          }
+        } catch (e) {
+          console.error("Failed to parse SSE event:", dataStr, e);
+        }
+      }
+      if (isChatStreamDone) {
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore
+        }
+        break;
+      }
+    }
+    for (const dataStr of sseLineParser.flush()) {
+      if (dataStr === "[DONE]") continue;
+      resetStallTimer();
+      try {
+        const data = JSON.parse(dataStr);
+        applyStreamTraceId(agentMsg.value, data);
+        if (handleBufferedBodyEvent(data)) continue;
+        if (applyReusableResultStatusEvent(agentMsg.value, data)) continue;
+        if (data.type === "log") addEmbedLogFromStream(agentMsg.value, data);
+        else if (mergeStreamCitations(agentMsg.value, data)) continue;
+        else if (dispatchAgentscopeStreamEvent(agentMsg.value, data, addEmbedLogFromStream, messages.value, handleBashEnvEvent)) continue;
+        else if (data.content) queueContentDelta(sanitizeStreamContent(String(data.content)));
+      } catch (e) {
+        console.error("Failed to parse final SSE event:", dataStr, e);
+      }
+    }
+    flushContentBuffer();
+    // 流已正常读完（收到 [DONE]）：本轮草稿不再是「在途」，清掉引用。
+    // 否则在「SSE 已结束、run-status 尚未翻回 false」的时间窗里，运行恢复器会把它
+    // 误判为断线在途——既误弹恢复提示，又白拉一次事件日志。
+    // 收尾副作用限定在本轮自己的会话：切走后草稿槽已被换绑，此刻再落定时间线会落到
+    // 当前会话的消息上（`currentStreamAgentMessage` 的兜底是「列表最后一条」）。
+    if (conversationId.value === streamConversationId) {
+      activeStreamDraft = null;
+      // 本轮的输出已经完整落到界面，恢复卡片转入完成态。
+      recoveryCardTerminalApplied.value = true;
+      settleRecoveredTimeline();
+      clearStreamReplayTimer();
+    }
+  } catch (e: any) {
+    flushContentBuffer();
+    if (e.name === "AbortError") {
+      if (!embedUnmounted) agentMsg.value.content += "\n[用户终止]";
+    } else if (document.visibilityState === "hidden") {
+      console.log("[Stream] Client disconnected in background; awaiting background producer sync on resume.");
+    } else if (!embedUnmounted) {
+      // 本端传输层错误：不是服务端那轮的终态。记下后缀供快照过滤，避免刷新后先闪出一条
+      // 过时错误、再被落库内容覆盖（用户实测现象）。
+      const transportErrorSuffix = `\n[错误: ${e.message}]`;
+      agentMsg.value.content += transportErrorSuffix;
+      agentMsg.value.clientTransportErrorSuffix = transportErrorSuffix;
+    }
+  } finally {
+    streamInFlight = false;
+    // SSE 已收流结束，此时才谈得上完成态：放在 streamInFlight 归零之后刷新，
+    // 否则「本端仍在收流」的判据会把完成提示压掉。
+    refreshRecoveryCard();
+    // 组件已卸载时不再执行收尾副作用：否则 abort 后的 refreshCurrentRunStatus 会在
+    // 已销毁的实例上重启会话轮询与网络请求。结果由下次挂载时的运行恢复器取回。
+    if (!embedUnmounted) {
+      flushContentBuffer();
+      // 锁态是全局的：只有本轮仍是当前会话时才用本轮的权限态覆盖它。切走后若照写，
+      // 会把目标会话刚算好的锁态冲掉，或用本轮的 pending 权限把它误锁住。
+      if (conversationId.value === streamConversationId) {
+        isProcessing.value = agentMsg.value.pendingPermission?.status === "pending" || agentMsg.value.pendingExternalExecution?.status === "pending";
+      }
+      // 流刚结束：立刻核验一次后端真相，并短时重试，把「后端已收尾、前端锁尚未收敛」
+      // 的窗口从最长 1.5s 压到近乎瞬时（不能直接清锁：流被中断时后端可能仍在跑）。
+      nudgeRunStatusConvergence();
+      agentMsg.value.isThinking = false;
+      void refreshQuota();
+      void loadReusableResultAvailability(); // 刷新会话可复用结果入口
+      void loadArtifactCounts(); // 刷新产物数量，新生成的产物即时显示角标与按钮
+      clearStallTimer();
+      clearStalePendingTimer();
+      showStalledPrompt.value = false;
+      void refreshEmbedContextUsage();
+      void refreshEmbedContextCompactions(true);
+      finishThoughtTimer(agentMsg.value);
+      // Final cleanup: stop any remaining log spinners
+      finalizeAllPendingStreamLogs(agentMsg.value);
+      scrollToBottom();
+    }
+  }
+};
+
+const BOTTOM_THRESHOLD_PX = 80;
+
+const runScrollToBottom = (force: boolean) => {
+  const el = messagesContainer.value;
+  if (!el) return;
+  if (force) {
+    autoScrollEnabled.value = true;
+    showNewMessageHint.value = false;
+  }
+  const { scrollHeight, clientHeight, scrollTop } = el;
+  const maxScroll = Math.max(0, scrollHeight - clientHeight);
+  const isNearBottom = maxScroll - scrollTop <= BOTTOM_THRESHOLD_PX;
+  if (force || isNearBottom || autoScrollEnabled.value) {
+    programmaticScrollUntil.value = Date.now() + 120;
+    el.scrollTop = scrollHeight;
+    showNewMessageHint.value = false;
+    queueMicrotask(() => {
+      const c = messagesContainer.value;
+      if (c) c.scrollTop = c.scrollHeight;
+    });
+  } else {
+    showNewMessageHint.value = true;
+  }
+};
+
+const scrollToBottom = (force = false) => {
+  nextTick(() => runScrollToBottom(force));
+};
+const handleScroll = (e: Event) => {
+    const target = e.target as HTMLDivElement;
+    // 1. History Loading Logic (Scroll to Top)
+    if (target.scrollTop === 0 && hasMoreHistory.value && !isLoadingHistory.value && messages.value.length > 0) {
+       fetchConversationHistory(true);
+    }
+    const { scrollHeight, clientHeight, scrollTop } = target;
+    const maxScroll = Math.max(0, scrollHeight - clientHeight);
+    const atBottom = maxScroll - scrollTop <= BOTTOM_THRESHOLD_PX;
+    isAtBottom.value = atBottom;
+
+    if (Date.now() < programmaticScrollUntil.value) {
+      if (atBottom) {
+        showNewMessageHint.value = false;
+        autoScrollEnabled.value = true;
+      } else if (
+        isProcessing.value &&
+        maxScroll - scrollTop > BOTTOM_THRESHOLD_PX + 60
+      ) {
+        // 程序滚底后的中间帧不误判；但若用户已明显离开底部，仍尊重手动阅读
+        autoScrollEnabled.value = false;
+      }
+      return;
+    }
+
+    if (atBottom) {
+        showNewMessageHint.value = false;
+        autoScrollEnabled.value = true;
+    } else {
+        if (isProcessing.value) {
+            autoScrollEnabled.value = false;
+        }
+    }
+};
+const fetchUserInfo = async () => {
+  try {
+    const res = await axios.get('/api/portal/auth/me');
+    if (res.data?.data) {
+       currentUser.value = res.data.data;
+    }
+    await refreshQuota();
+  } catch (err) {
+    console.warn("[Auth] Failed to fetch user info:", err);
+  }
+};
+
+const onUnmountHandlers = ref<{
+  onMessage?: (e: MessageEvent) => void;
+  onOnline?: () => void;
+  onOffline?: () => void;
+  onPortalDrawerKeydown?: (e: KeyboardEvent) => void;
+} | null>(null);
+// Lifecycle
+onMounted(() => {
+  console.log("[LifeCycle] YltEmbedChat mounted. App Version: 2026-01-20-v1");
+  // 顶部「进行中的会话」角标：进页面就开始低频轮询（15s），面板打开时自动提速到 3s。
+  startActiveRunsWatch();
+  // 没有用户维度的会话/草稿键一律清掉：它们没有身份边界，留着只会被误读。
+  purgeLegacyConversationStorage();
+  purgeLegacyStreamSnapshots();
+  window.addEventListener("resize", updateWidth);
+  updateWidth();
+
+  const onMessage = (e: MessageEvent) => {
+    // Avoid logging raw payload to prevent leaking tokens/config in console
+    console.log("[Message] Received postMessage from origin:", e.origin);
+    handlePostMessage(e);
+  };
+  const onOnline = () => {
+    connectionStatus.value = "reconnecting";
+    setTimeout(() => (connectionStatus.value = "connected"), 1000);
+  };
+  const onOffline = () => (connectionStatus.value = "disconnected");
+
+  window.addEventListener("message", onMessage);
+  window.addEventListener("online", onOnline);
+  window.addEventListener("offline", onOffline);
+  window.addEventListener("fullscreenchange", updateFullScreenStatus);
+  window.addEventListener("keydown", handleGlobalKeydown);
+  // Load Routing Settings
+  const savedMulti = localStorage.getItem("yovole_enable_multi_agent");
+  if (savedMulti !== null) config.enableMultiAgent = savedMulti === "1";
+  const savedShortcuts = localStorage.getItem("yovole_show_shortcuts");
+  if (savedShortcuts !== null) config.showShortcuts = savedShortcuts === "1";
+  const savedSqlPlan = localStorage.getItem("yovole_enable_sql_plan");
+  if (savedSqlPlan !== null) config.enableSqlPlan = savedSqlPlan === "1";
+  const savedOverrideModel = localStorage.getItem("yovole_override_model");
+  if (savedOverrideModel) config.overrideModel = savedOverrideModel;
+  const savedApprovalMode = localStorage.getItem("yovole_approval_mode");
+  if (savedApprovalMode === "ask" || savedApprovalMode === "allow" || savedApprovalMode === "deny") {
+    config.approvalMode = savedApprovalMode;
+  }
+  const savedTheme = localStorage.getItem("yovole_embed_theme");
+  if (savedTheme) {
+    config.theme = savedTheme;
+    applyTheme(savedTheme);
+  }
+  const savedExpandThoughts = localStorage.getItem("yovole_expand_thoughts");
+  if (savedExpandThoughts !== null) config.expandThoughts = savedExpandThoughts === "1";
+  const savedGroundingBlockMode = localStorage.getItem("yovole_grounding_block_mode");
+  if (savedGroundingBlockMode === "strict_buffer" || savedGroundingBlockMode === "stream_with_retraction") {
+    config.groundingBlockMode = savedGroundingBlockMode;
+  }
+  const savedMarkdownTheme = localStorage.getItem("yovole_markdown_theme");
+  if (
+    savedMarkdownTheme === "default" ||
+    savedMarkdownTheme === "minimal" ||
+    savedMarkdownTheme === "academic" ||
+    savedMarkdownTheme === "apple" ||
+    savedMarkdownTheme === "warm" ||
+    savedMarkdownTheme === "compact"
+  ) {
+    config.markdownTheme = savedMarkdownTheme;
+  }
+  const savedHideMessageBorder = localStorage.getItem("yovole_hide_message_border");
+  if (savedHideMessageBorder !== null) {
+    config.hideMessageBorder = savedHideMessageBorder === "1";
+  }
+  const savedShowGeneratingAnimation = localStorage.getItem("yovole_show_generating_animation");
+  if (savedShowGeneratingAnimation !== null) {
+    config.showGeneratingAnimation = savedShowGeneratingAnimation === "1";
+  }
+  // 清理可能残留的陈旧本地头像缓存，AI 头像始终以服务端 Redis 全局配置为准
+  localStorage.removeItem("yovole_embed_agent_avatar");
+  void fetchUserPortalPreferences();
+  const query = new URLSearchParams(window.location.search);
+  const queryInstanceId = normalizeEmbedInstanceId(query.get("instance_id"));
+  if (queryInstanceId) config.instanceId = queryInstanceId;
+  if (query.get("strict_token") === "1") {
+    strictTokenValidation.value = true;
+    console.log("[LifeCycle] Strict token validation enabled (debug mode).");
+  }
+  const ticketFromUrl = query.get("ticket");
+  if (ticketFromUrl) {
+    console.log("[LifeCycle] Ticket found in URL. Exchanging for session token...");
+    void (async () => {
+      const ok = await exchangeTicketOnce(ticketFromUrl);
+      if (ok) {
+        hasPermission.value = true;
+        postInitSuccess();
+        // 兑换成功后会话令牌已落到本 tab 的 sessionStorage（跨站 iframe 也有效），
+        // 刷新不再依赖 URL 里的 ticket（它是一次性的，此刻已核销），可以安全清除。
+        maybeStripUrlAfterSessionReady();
+        scheduleUrlTokenInitialization();
+        fetchUserInfo();
+        fetchAllowedAgents();
+        fetchSlashCommands();
+      } else {
+        // 小程序宿主：凭证失效/未拿到时，让小程序重新签票回聊天页，避免停在白屏
+        if (relaunchMiniappChat(config.instanceId)) {
+          return;
+        }
+        authFailureReason.value = resolveTicketFailureReason();
+        hasPermission.value = false;
+        postMessageToHost({ type: "INIT_FAILURE", reason: authFailureReason.value });
+      }
+    })();
+  } else if (query.get("token")) {
+    const token = query.get("token")!;
+    // 仅设置内存中的 config.token 参与校验；校验通过后再 syncValidatedCredentials，避免脏 URL 覆盖 localStorage
+    config.token = token;
+    // 标记本次为 URL 直传兼容模式：提示「接入方式」而非校验结果，故不放在校验分支内
+    usesLegacyUrlToken.value = true;
+    console.log("[LifeCycle] Token found in URL (persist to storage only after validation).");
+  }
+  if (query.get("agent_id")) {
+    const agentId = query.get("agent_id")!;
+    urlPinnedAgentKey.value = agentId;
+    config.agentId = agentId;
+    // 正式锁定在 initChat -> resolveUrlPinnedAgent 成功后完成
+  }
+  if (query.get("theme")) applyTheme(query.get("theme")!);
+  // 忽略键在 instance_id 与 agent_id 都解析完成后才能确定（agent_id 晚于 token 分支赋值）
+  loadLegacyTokenHintIgnored();
+  postMessageToHost({ type: "NANZI_WIDGET_READY" });
+  if (config.token && !ticketFromUrl) {
+    console.log("[LifeCycle] Initializing chat from existing token...");
+    scheduleUrlTokenInitialization();
+    fetchUserInfo(); // Add explicit user fetch
+    fetchAllowedAgents();
+    fetchSlashCommands();
+  } else if (!ticketFromUrl) {
+    // 无 token 也无 ticket：可能是「清除 URL 凭据后的刷新」。凭据现在有两个可能来源——
+    // 本 tab 的 sessionStorage（首次认证时落地）或同源 Cookie。若在此不触发，页面永远
+    // 不会发起认证——清 URL 会连带抽掉原先由 token 撑起的触发条件。
+    console.log("[LifeCycle] No URL credential; bootstrapping via persisted session...");
+    scheduleCookieOnlyInitialization();
+  }
+
+  // 切回前台（切回 App 或多标签页）时自动探测并拉取最新会话历史，支持退避轮询直到后台持久化完成
+  let visibilitySyncTimer: any = null;
+  const clearVisibilitySyncTimer = () => {
+    if (visibilitySyncTimer) {
+      clearTimeout(visibilitySyncTimer);
+      visibilitySyncTimer = null;
+    }
+  };
+
+  const syncLatestSessionHistory = async (attempt = 1, maxAttempts = 15) => {
+    // 请求可能在组件卸载后才返回：不要再写已销毁实例的消息/草稿/快照。
+    if (embedUnmounted) return;
+    if (!conversationId.value || !hasPermission.value) return;
+    // 本次同步服务于哪个会话：await 期间可能已经切走，那时任何写入（尤其是 reload 分支
+    // 的 clearStreamSnapshot）都会打到新会话身上。
+    const startedForConversation = conversationId.value;
+    const conversationChanged = () => conversationId.value !== startedForConversation;
+
+    const scheduleHistoryRetry = () => {
+      if (attempt >= maxAttempts || document.visibilityState !== "visible") return;
+      clearVisibilitySyncTimer();
+      visibilitySyncTimer = setTimeout(() => {
+        void syncLatestSessionHistory(attempt + 1, maxAttempts);
+      }, 1500);
+    };
+
+    // 首屏/切会话历史尚未落地：messages 可能为空，reload 会与首屏请求互相覆盖，
+    // 甚至把尚未还原的快照提前删掉。等历史落地后下一轮再收敛。
+    if (isLoadingHistory.value) {
+      scheduleHistoryRetry();
+      return;
+    }
+
+    try {
+      const headers: any = {};
+      if (config.token) {
+        headers["Authorization"] = `Bearer ${config.token}`;
+        headers["X-API-Key"] = config.token;
+      }
+      // 只需要最新一条：page_size=5 会让后端每次都把 5 条完整记录（含 summary /
+      // reasoning / process_timeline / citations）及其 enrichment 一起返回，而恢复器
+      // 每 3s 就要拉一次。page_size=1 直接把恢复期的载荷与后端开销压到最小。
+      const res = await axios.get("/api/v1/chat/history", {
+        params: { conversation_id: conversationId.value, page: 1, page_size: 1 },
+        headers,
+      });
+      if (res.data?.data && Array.isArray(res.data.data.items) && res.data.data.items.length > 0) {
+        const latestServerItem = res.data.data.items[0];
+        if (conversationId.value !== startedForConversation) return;
+        // 合并决策交给纯函数：既要把后台落库的结果取回来，又不能产生重复气泡
+        // 或把更早轮次的陈留记录贴到新提问下面。
+        const action = planHistorySync(
+          messages.value,
+          {
+            trace_id: latestServerItem?.trace_id,
+            summary: latestServerItem?.summary,
+            query: latestServerItem?.query,
+            reasoning_content: latestServerItem?.reasoning_content,
+            process_timeline: Array.isArray(latestServerItem?.process_timeline)
+              ? latestServerItem.process_timeline
+              : null,
+            status: latestServerItem?.status,
+            created_at: latestServerItem?.created_at,
+          },
+          { hasUnsettledDraft: activeStreamDraft !== null },
+        );
+        if (action.kind === "reload") {
+          // 页面重建后消息列表为空、服务端已出现终态记录：重拉整段历史。
+          // 只补一条助手消息会丢掉对应的用户提问，直接忽略则回答永远不出现。
+          // 会话已切换则放弃：这个 reload 是「切走」造成的空列表，不是页面重建——
+          // 照做会删掉目标会话仍在跑的在途快照。
+          if (conversationId.value !== startedForConversation) return;
+          // 先重拉、再清理：旧实现先 clearStreamSnapshot 再请求历史，慢网络下首屏历史
+          // 还没跑完就走到这里，会把尚未还原的快照直接删掉，草稿与续显一起消失。
+          await fetchConversationHistory(false);
+          if (conversationChanged()) return;
+          const latestVisible = latestServerItem?.trace_id
+            ? messages.value.some(
+                (message) => message.role === "agent" && message.trace_id === latestServerItem.trace_id,
+              )
+            : messages.value.length > 0;
+          if (!latestVisible) {
+            // 重拉失败 / 还没拿到最新记录：保留草稿与快照，下一轮再试。
+            scheduleHistoryRetry();
+            return;
+          }
+          finishRecoveredTurn();
+          clearVisibilitySyncTimer();
+          await nextTick();
+          scrollToBottom();
+          return;
+        }
+        if (action.kind === "update" || action.kind === "fill") {
+          const currentMsg = messages.value[action.index];
+          if (currentMsg) {
+            // fill 是「草稿还没有 trace_id」时就地补全：这一支没有 trace 匹配可依据，
+            // 服务端 items[0] 有可能仍是上一轮的陈留记录。此时若把它的 trace_id 写进草稿，
+            // 本轮真答案落库后就再也匹配不上（末条又是有内容的 agent → ignore），界面会
+            // 永久停在上一轮的答案上。所以只补内容、不锁 trace。
+            if (action.kind === "update") {
+              currentMsg.trace_id = currentMsg.trace_id || latestServerItem.trace_id;
+            }
+            // summary 为空但有 timeline / reasoning 的轮次同样合法：此时保留草稿里已经
+            // 渲染出的正文，绝不能用空串把它抹掉。
+            const serverSummary = String(latestServerItem.summary ?? "");
+            if (serverSummary) currentMsg.content = serverSummary;
+            currentMsg.reasoningContent = latestServerItem.reasoning_content ?? currentMsg.reasoningContent;
+            if (
+              Array.isArray(latestServerItem.process_timeline) &&
+              latestServerItem.process_timeline.length > 0
+            ) {
+              currentMsg.processTimeline = hydrateHistoryProcessTimeline(
+                latestServerItem.process_timeline,
+                latestServerItem.reasoning_content,
+              );
+            }
+            currentMsg.citations = latestServerItem.citations ?? currentMsg.citations;
+            currentMsg.isThinking = false;
+            // 流中断时占位消息拿不到智能体元数据，恢复同步时补齐。
+            if (!currentMsg.agentName) {
+              currentMsg.agentName = latestServerItem.agent_name ?? undefined;
+              currentMsg.agentDisplayName = latestServerItem.agent_display_name || (String(latestServerItem.agent_name || '').startsWith('sys_') ? '系统助手' : undefined);
+              currentMsg.agentType = latestServerItem.agent_type ?? undefined;
+              currentMsg.agentAvatarUrl = latestServerItem.agent_avatar_url ?? undefined;
+              currentMsg.prompt_tokens = latestServerItem.prompt_tokens ?? undefined;
+              currentMsg.completion_tokens = latestServerItem.completion_tokens ?? undefined;
+              currentMsg.total_tokens = latestServerItem.total_tokens ?? undefined;
+            }
+          }
+        } else if (action.kind === "append") {
+          // 可见性同步与恢复器可能并发拿到同一条记录，各自都判成 append；
+          // 落库前再核对一次，避免同一条回答生成两个气泡。
+          const appendTraceId = String(latestServerItem.trace_id || "");
+          if (
+            appendTraceId &&
+            messages.value.some(
+              (message) => message.role === "agent" && message.trace_id === appendTraceId,
+            )
+          ) {
+            finishRecoveredTurn();
+            clearVisibilitySyncTimer();
+            return;
+          }
+          messages.value.push({
+            id: Date.now(),
+            trace_id: latestServerItem.trace_id,
+            role: 'agent',
+            content: latestServerItem.summary,
+            reasoningContent: latestServerItem.reasoning_content ?? undefined,
+            processTimeline: hydrateHistoryProcessTimeline(latestServerItem.process_timeline, latestServerItem.reasoning_content),
+            citations: latestServerItem.citations ?? undefined,
+            logs: [],
+            isThinking: false,
+            feedback: null,
+            agentName: latestServerItem.agent_name ?? undefined,
+            agentDisplayName: latestServerItem.agent_display_name || (String(latestServerItem.agent_name || '').startsWith('sys_') ? '系统助手' : undefined),
+            agentType: latestServerItem.agent_type ?? undefined,
+            agentAvatarUrl: latestServerItem.agent_avatar_url ?? undefined,
+            prompt_tokens: latestServerItem.prompt_tokens ?? undefined,
+            completion_tokens: latestServerItem.completion_tokens ?? undefined,
+            total_tokens: latestServerItem.total_tokens ?? undefined,
+            timestamp: latestServerItem.created_at,
+          });
+        }
+        if (action.kind !== "ignore") {
+          // 只有「本轮」的收敛才能走 finishRecoveredTurn（清草稿/停续显/卡片完成）。
+          // 并发/陈旧记录可能命中上一轮的助手消息（内容比本地长），那种 update 只
+          // 补内容，绝不能顺手清掉本轮仍在途的草稿。
+          const lastLocalUserIndex = (() => {
+            for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+              if (messages.value[index].role === "user") return index;
+            }
+            return -1;
+          })();
+          const actionIsForCurrentTurn =
+            action.kind === "append" ||
+            (typeof action.index === "number" && action.index > lastLocalUserIndex);
+          if (actionIsForCurrentTurn) {
+            finishRecoveredTurn();
+          }
+          clearVisibilitySyncTimer();
+          await nextTick();
+          scrollToBottom();
+          return;
+        }
+        // ignore 有两种含义：「服务端还没落库」与「本地已经是这条终态」。
+        // 后者（trace 在本地、且记录属于界面上的最后一轮）同样可以收尾，否则草稿
+        // 与快照会一直悬着，下一轮恢复还会把它们当成「未收敛」。
+        if (conversationChanged()) return;
+        const latestTrace = String(latestServerItem?.trace_id || "");
+        let lastLocalUserIndex = -1;
+        for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+          if (messages.value[index].role === "user") {
+            lastLocalUserIndex = index;
+            break;
+          }
+        }
+        const lastLocalUser = lastLocalUserIndex >= 0 ? messages.value[lastLocalUserIndex] : null;
+        const latestSyncedIndex = latestTrace
+          ? messages.value.findIndex(
+              (message) => message.role === "agent" && message.trace_id === latestTrace,
+            )
+          : -1;
+        // 命中的必须是「最后一条用户提问之后」的助手消息：同一会话重复提问时，
+        // 上一轮的答案同样满足 query 文本相等，只有位置能区分是不是本轮。
+        const isLatestTurn =
+          latestSyncedIndex > lastLocalUserIndex &&
+          Boolean(latestServerItem?.query) &&
+          Boolean(lastLocalUser) &&
+          String(lastLocalUser.content || "") === String(latestServerItem.query || "");
+        if (latestSyncedIndex !== -1 && isLatestTurn) {
+          if (activeStreamDraft) {
+            finishRecoveredTurn();
+          } else {
+            clearStreamSnapshot(conversationId.value);
+          }
+          clearVisibilitySyncTimer();
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("[LifeCycle] Failed to sync session on visibility change:", err);
+    }
+
+    if (attempt < maxAttempts) {
+      // 判据只看「有语义」的最后一条：首屏历史末尾的 system 分隔符不代表任何轮次状态，
+      // 拿它判断会让刷新后无草稿的场景在这里静默放弃重试。
+      const lastMsg = [...messages.value].reverse().find((message) => message.role !== "system");
+      // 判据抽成纯函数：只要界面上还有未收敛的痕迹（含「草稿已有正文但在途」）就继续
+      // 重试。此前按 `isThinking || !content` 判定，草稿一有正文就静默放弃重试，
+      // 落库稍慢就会让界面永久停在半截输出，只能刷新页面。
+      const needsSync = shouldKeepRecoverySync({
+        isProcessing: isProcessing.value,
+        lastMessage: lastMsg,
+        hasUnsettledDraft: activeStreamDraft !== null,
+      });
+      if (needsSync && document.visibilityState === "visible") {
+        scheduleHistoryRetry();
+      }
+    } else if (maxAttempts > 1) {
+      // 只有「带重试的调用」才存在「重试耗尽」这件事。恢复器是按 (1, 1) 调用的周期
+      // 轮询，它本身就靠外层定时器反复重试；若也落进这个兜底分支，就会每 3s 调一次
+      // markOutputCompleted，把仍被后端锁住的输入框反复解锁，并留下「输出已完成」标记。
+      if (isProcessing.value) {
+        isProcessing.value = false;
+      }
+      // 历史同步重试已耗尽，说明前端再也拿不到更权威的进展信号。此时若界面已无待确认
+      // 卡片、流也已结束，就一并解锁输入——否则 `remoteRunBusy` 会一直把快捷按钮拦在
+      // `handleQuickQuestion` 的守卫里，表现为「输出完了却点不动」。
+      // 注意：只解锁输入，`remoteRunActive`（锁真相）保持不动，恢复器仍会继续收敛。
+      if (remoteRunActive.value && !streamInFlight && !hasPendingConfirmation()) {
+        markOutputCompleted();
+      }
+    }
+  };
+
+  // --- 运行恢复器（run-status 驱动的会话续订）---
+  // EmbedChat 是路由级页面：切到平台内其他页面再切回会卸载重建，切后台也可能让 SSE
+  // 静默失效。两种情况下 SSE 与页面的绑定都会丢失（visibilitychange 甚至不会触发），
+  // 而服务端 producer 仍会把任务跑完并落库。因此这里不以 SSE 为准，改以 run-status
+  // 为真相源：只要仍为 active 就周期把最新历史收敛到界面，转为 false 时补一次终态同步。
+  //
+  // 第二驱动力是 `recoveryPending`（界面上还有未收敛草稿）：run-status 查询失败、
+  // 或任务恰好在本页挂载窗口内结束时，`remoteRunActive` 会一直是 false，只靠它驱动
+  // 就没人收敛了。
+  const RUN_RECOVERY_SYNC_INTERVAL_MS = 3000;
+  let runRecoveryTimer: any = null;
+  const clearRunRecoveryTimer = () => {
+    if (runRecoveryTimer) {
+      clearTimeout(runRecoveryTimer);
+      runRecoveryTimer = null;
+    }
+  };
+  const hasPendingConfirmation = () => {
+    const lastMsg = [...messages.value].reverse().find((message) => message.role !== "system");
+    return Boolean(
+      lastMsg?.pendingPermission?.status === "pending" ||
+      lastMsg?.pendingExternalExecution?.status === "pending",
+    );
+  };
+  const scheduleRunRecoverySync = () => {
+    clearRunRecoveryTimer();
+    if (!remoteRunActive.value && !recoveryPending.value) return;
+    if (document.visibilityState !== "visible") return;
+    // 流仍在正常推进时由 SSE 自己收敛界面：既不必额外拉历史，也不必启动事件续显。
+    // `remoteRunActive` 在每次正常发送时同样为 true，若不设这道闸门，普通对话会多出
+    // 每 3s 一次的 history 请求，以及每 1s 一次的 stream-events 请求（后者还会把 SSE
+    // 已经渲染过的事件重放一遍）。只有流已静默（复用既有 Stall 信号）或根本没有流在途
+    // （页面卸载重建 / 切回）才需要恢复同步。
+    if (streamInFlight && !showStalledPrompt.value) {
+      runRecoveryTimer = setTimeout(scheduleRunRecoverySync, RUN_RECOVERY_SYNC_INTERVAL_MS);
+      return;
+    }
+    // 运行态未知时保留旧锁态并重试（composable 内部也有退避，这里保证恢复器不会
+    // 因为一次查询失败就停摆）。
+    if (statusUnknown.value) {
+      void refreshCurrentRunStatus();
+    }
+    // 没有草稿（快照丢失 / 首片正文前刷新）：先从 Redis 会话历史补出提问与占位，
+    // 否则事件续显与终态合并都没有落点。
+    if (!activeStreamDraft) {
+      void ensureRecoveryDraft();
+    }
+    // 与历史收敛并行地把事件日志续显进本轮草稿：history 只给落库终态，事件日志给
+    // 过程（思考、工具时间线、正文增量）。它自带 lastSeq 游标，重复启动是幂等的。
+    if (activeStreamDraft) scheduleStreamReplay();
+    // 运行态长期无法确认时不能无限轮询/永久锁输入：超过窗口后停止收敛并解锁，
+    // 保留已输出内容，由用户决定刷新或重发。
+    if (!remoteRunActive.value) {
+      recoveryUnknownCycles += 1;
+      if (recoveryUnknownCycles > RECOVERY_UNKNOWN_MAX_CYCLES) {
+        recoveryGraceExpired.value = true;
+        // 宽限期结束：运行态始终无法确认，停止事件续显与恢复循环，避免永久每秒轮询。
+        // 已输出的草稿保留在界面，用户可手动刷新/继续。
+        clearStreamReplayTimer();
+        refreshRecoveryCard();
+        return;
+      }
+    } else {
+      recoveryUnknownCycles = 0;
+    }
+    runRecoveryTimer = setTimeout(async () => {
+      runRecoveryTimer = null;
+      await syncLatestSessionHistory(1, 1);
+      if (remoteRunActive.value || recoveryPending.value) scheduleRunRecoverySync();
+    }, RUN_RECOVERY_SYNC_INTERVAL_MS);
+  };
+  watch(remoteRunActive, (active) => {
+    if (active) {
+      recoveryUnknownCycles = 0;
+      recoveryGraceExpired.value = false;
+      scheduleRunRecoverySync();
+      return;
+    }
+    if (!recoveryPending.value) clearRunRecoveryTimer();
+    // 终态已到：停止事件续显，界面交由下面的历史同步按落库结果收敛。
+    clearStreamReplayTimer();
+    // 锁已释放，收敛助推与排队补发都不必再等；补发由 quickSendBlocked 的 watch 立即接手。
+    clearRunStatusNudge();
+    // 本轮提示已消费完毕，重置后下一轮任务切回仍会提示。
+    streamReplayPrimed = false;
+    if (!streamInFlight && isProcessing.value && !hasPendingConfirmation()) {
+      // run-status 是权威真相源：流已死时不能把输入框永久锁在 busy。
+      isProcessing.value = false;
+    }
+    // 切换会话主动 resetRunStatus() 也会走到这里，但那是「换会话」而不是「本轮结束」：
+    // 此刻消息列表刚清空、草稿已换绑，收敛会把空列表判成 reload 并删掉目标会话的在途
+    // 快照。真正的收敛交给切换路径自己按目标会话执行。
+    if (suppressRunTerminalSyncForConversationSwitch) {
+      suppressRunTerminalSyncForConversationSwitch = false;
+      return;
+    }
+    // 运行结束收敛：把后台 producer 已落库的最终回答取回界面。
+    void syncLatestSessionHistory(1, 5);
+    // 后端已确认本轮结束、终态落库：面板开着时列表里的轮次数 / 摘要 / 时间已过期，顺手取最新。
+    // 挂在 run-status 翻 false 而不是 SSE 读完，是因为流结束时 FinalizeStep 可能还在落库。
+    if (showHistorySidebar.value) {
+      void fetchHistory();
+    }
+  });
+  // 草稿成为「未收敛」的瞬间也要启动恢复器：它覆盖 run-status 失败/未翻转的窗口。
+  watch(recoveryPending, (pending) => {
+    if (pending) {
+      scheduleRunRecoverySync();
+    } else if (!remoteRunActive.value) {
+      clearRunRecoveryTimer();
+    }
+  });
+  // 首屏历史 + 快照落定后的一次有界收敛：兜住「离开期间任务已跑完、新记录晚于首屏历史」
+  // 以及「run-status 在本页挂载窗口内才翻 false」两个竞态。
+  afterStreamSnapshotRestored = () => {
+    if (embedUnmounted || !conversationId.value) return;
+    void refreshCurrentRunStatus();
+    void syncLatestSessionHistory(1, 3);
+    if (recoveryPending.value) scheduleRunRecoverySync();
+  };
+  // 挂载竞态兜底：若 run-status 在本组件挂载前就已解析为 active，watch 不会再触发。
+  if (remoteRunActive.value) scheduleRunRecoverySync();
+  if (recoveryPending.value) scheduleRunRecoverySync();
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === "visible") {
+      clearVisibilitySyncTimer();
+      void refreshCurrentRunStatus();
+      syncLatestSessionHistory(1, 15);
+      scheduleRunRecoverySync();
+      startActiveRunsWatch();
+    } else {
+      stopRemoteRunPolling();
+      stopActiveRunsWatch();
+      clearVisibilitySyncTimer();
+      clearRunRecoveryTimer();
+      // hidden 只暂停续显轮询：游标保留，切回时从原处接着拉。
+      clearStreamReplayTimer();
+      // 切后台瞬间把草稿落盘：切回时若续显接管，首次会「只对齐游标、不重放」，
+      // 这里落盘保证快照覆盖到此刻，对齐跳过的历史事件不会造成内容缺口。
+      maybePersistStreamSnapshot(true);
+    }
+  };
+
+  document.addEventListener("visibilitychange", onVisibilityChange);
+
+  // 浏览器硬刷新/关闭标签时不会走 Vue 的 onUnmounted，visibilitychange 也不保证派发：
+  // 必须由 pagehide 兜底把「最近 1.5s 的草稿」落盘一次。bfcache 恢复（pageshow.persisted）
+  // 时页面实例还在，但 SSE 可能已死，补一次运行态核验与历史收敛。
+  const onPageHide = () => {
+    maybePersistStreamSnapshot(true);
+  };
+  const onPageShow = (event: PageTransitionEvent) => {
+    if (!event?.persisted) return;
+    void refreshCurrentRunStatus();
+    void syncLatestSessionHistory(1, 5);
+    if (recoveryPending.value) scheduleRunRecoverySync();
+  };
+  window.addEventListener("pagehide", onPageHide);
+  window.addEventListener("pageshow", onPageShow);
+
+  // Attach cleanup handlers to component instance scope
+  (onUnmountHandlers as any).value = {
+    onMessage,
+    onOnline,
+    onOffline,
+    onVisibilityChange,
+    onPageHide,
+    onPageShow,
+    clearVisibilitySyncTimer,
+    clearRunRecoveryTimer,
+    clearStreamReplayTimer,
+  };
+});
+onUnmounted(() => {
+  if (activeRunsRefreshTimer !== null) clearTimeout(activeRunsRefreshTimer);
+  stopActiveRunsWatch();
+  // 卸载前把在途草稿强制落盘：重建后先还原已输出的思考与正文，等落库终态再覆盖。
+  maybePersistStreamSnapshot(true);
+  // 组件已卸载：终止仍在读取的幽灵流（服务端 producer 不受影响，仍会跑完落库并
+  // 由运行恢复器在下次挂载时取回），并停止流收尾副作用。
+  embedUnmounted = true;
+  streamInFlight = false;
+  // 恢复卡片的完成态停留定时器必须随组件一起清掉，避免卸载后回调触碰已失效的状态。
+  clearRecoveryCardDoneTimer();
+  if (abortController) abortController.abort();
+  if (abortController) abortController = null;
+  cancelPendingUrlTokenInitialization();
+  // 卸载后定时器再触发就只是发一次没人等的收尾请求，直接撤掉。
+  cancelPendingConversationFinalize();
+  window.removeEventListener("resize", updateWidth);
+  window.removeEventListener("fullscreenchange", updateFullScreenStatus);
+  window.removeEventListener("keydown", handleGlobalKeydown);
+  const handlers = (onUnmountHandlers as any).value;
+  if (handlers?.onMessage) window.removeEventListener("message", handlers.onMessage);
+  if (handlers?.onOnline) window.removeEventListener("online", handlers.onOnline);
+  if (handlers?.onOffline) window.removeEventListener("offline", handlers.onOffline);
+  if (handlers?.onVisibilityChange) document.removeEventListener("visibilitychange", handlers.onVisibilityChange);
+  if (handlers?.onPageHide) window.removeEventListener("pagehide", handlers.onPageHide);
+  if (handlers?.onPageShow) window.removeEventListener("pageshow", handlers.onPageShow);
+  afterStreamSnapshotRestored = null;
+  recoveryPending.value = false;
+  if (handlers?.clearVisibilitySyncTimer) handlers.clearVisibilitySyncTimer();
+  if (handlers?.clearRunRecoveryTimer) handlers.clearRunRecoveryTimer();
+  if (handlers?.clearStreamReplayTimer) handlers.clearStreamReplayTimer();
+  clearRunStatusNudge();
+  // 卸载后不再补发排队的快捷提问：会话已切走，也不该再触发一次发送。
+  dropPendingQuickSend();
+  disposePortalTimers();
+  stopPortalLoadingTips();
+  if (thoughtTimer) clearInterval(thoughtTimer);
+});
+// --- Typewriter Effect ---
+const displayedWelcomeMessage = ref("");
+let typewriterInterval: any = null;
+let typewriterTimeout: any = null;
+const startTypewriter = (text: string) => {
+  // Clear any existing timers
+  clearInterval(typewriterInterval);
+  clearTimeout(typewriterTimeout);
+  displayedWelcomeMessage.value = "";
+  let i = 0;
+  let isDeleting = false;
+  const typeLoop = () => {
+    // Type out
+    if (!isDeleting && i <= text.length) {
+      displayedWelcomeMessage.value = text.substring(0, i);
+      i++;
+      if (i > text.length) {
+         // Finished typing, wait then delete
+         isDeleting = true;
+         // Wait 3 seconds before deleting
+         typewriterTimeout = setTimeout(typeLoop, 3000);
+         return;
+      }
+      typewriterTimeout = setTimeout(typeLoop, 100); // Typing speed
+    }
+    // Delete
+    else if (isDeleting && i >= 0) {
+      displayedWelcomeMessage.value = text.substring(0, i);
+      i--;
+      if (i < 0) {
+        // Finished deleting, restart
+        isDeleting = false;
+        i = 0;
+        // Wait 0.5s before typing again
+        typewriterTimeout = setTimeout(typeLoop, 500);
+        return;
+      }
+      typewriterTimeout = setTimeout(typeLoop, 50); // Deleting speed
+    }
+  };
+  typeLoop();
+};
+// ... existing code ...
+// Watch for welcome message changes (init or override)
+watch(
+  () => config.welcomeMessage,
+  (newVal: string) => {
+    if (newVal) {
+      startTypewriter(newVal);
+    }
+  },
+  { immediate: true }
+);
+// Cleanup
+onUnmounted(() => {
+  clearInterval(typewriterInterval);
+  clearTimeout(typewriterTimeout);
+});
+</script>
+<style>
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes pulse-fast {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.animate-pulse-fast {
+  animation: pulse-fast 0.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes bounce-dot {
+  0%, 100% {
+    transform: translateY(0);
+    opacity: 0.3;
+  }
+  50% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+.animate-bounce-dot {
+  animation: bounce-dot 0.8s infinite ease-in-out;
+  display: inline-block;
+}
+</style>
+<style scoped>
+.slide-fade-enter-active,
+.slide-fade-leave-active {
+  transition: all 0.2s ease-out;
+}
+.slide-fade-enter-from {
+  opacity: 0;
+  transform: translateY(5px);
+}
+.slide-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-5px);
+}
+.bash-banner-fade-enter-active,
+.bash-banner-fade-leave-active {
+  transition: opacity 0.28s ease-out, transform 0.28s ease-out;
+}
+.bash-banner-fade-enter-from {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.bash-banner-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(156, 163, 175, 0.5);
+  border-radius: 2px;
+}
+@keyframes pulse-slow {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.2;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.4;
+  }
+}
+.animate-pulse-slow {
+  animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+/* Skeleton Loading Animation */
+@keyframes pulse-skeleton {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.animate-pulse {
+  animation: pulse-skeleton 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+/* Enhanced Markdown Styles synchronized from AgentDebug */
+:deep(.markdown-body) {
+  font-size: 14px;
+}
+:deep(.markdown-body p) {
+  margin-bottom: 1em;
+}
+:deep(.markdown-body p:last-child),
+:deep(.markdown-body > :last-child),
+:deep(.markdown-body ul:last-child),
+:deep(.markdown-body ol:last-child),
+:deep(.markdown-body blockquote:last-child),
+:deep(.markdown-body pre:last-child),
+:deep(.markdown-body .markdown-table-scroll:last-child) {
+  margin-bottom: 0 !important;
+}
+:deep(.markdown-body ul:last-child > li:last-child),
+:deep(.markdown-body ol:last-child > li:last-child) {
+  margin-bottom: 0 !important;
+}
+:deep(.markdown-body h1, .markdown-body h2, .markdown-body h3) {
+  font-weight: 600;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  color: var(--primary-color, #1677ff);
+}
+:deep(.markdown-body code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background-color: rgba(175, 184, 193, 0.2);
+  padding: 0.2em 0.4em;
+  border-radius: 6px;
+  font-size: 85%;
+}
+:deep(.markdown-body pre code) {
+  background-color: transparent;
+  padding: 0;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+:deep(.markdown-body pre) {
+  margin-top: 1em;
+  margin-bottom: 1em;
+  padding: 1.25em 1em 1em 1em;
+  background-color: #f8fafc;
+  color: #0f172a;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: auto;
+  position: relative;
+  box-shadow: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.6;
+}
+.dark :deep(.markdown-body pre) {
+  background-color: #0f172a;
+  color: #f1f5f9;
+  border-color: #1e293b;
+}
+:deep(.markdown-body pre):before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #ff5f56;
+  box-shadow: 16px 0 0 #ffbd2e, 32px 0 0 #27c93f;
+  z-index: 1;
+}
+:deep(.markdown-body ul, .markdown-body ol) {
+  padding-left: 1.5em;
+  margin-bottom: 1em;
+}
+:deep(.markdown-body ol) {
+  list-style-type: decimal;
+}
+:deep(.markdown-body ul) {
+  list-style-type: disc;
+}
+:deep(.markdown-body li) {
+  margin-bottom: 0.4em;
+}
+:deep(.markdown-body blockquote) {
+  border-left: 4px solid #e5e7eb;
+  padding-left: 1rem;
+  color: #6b7280;
+  margin: 1em 0;
+}
+.markdown-theme-default {
+  --ai-bubble-background: #ffffff;
+  --ai-bubble-border: #e5e7eb;
+  --ai-bubble-accent: rgba(22, 119, 255, 0.6);
+  --md-table-background: #ffffff;
+  --md-table-header: #f8fafc;
+  --md-table-text: #334155;
+  --md-table-border: #e2e8f0;
+  --md-table-cell-border: #eef2f7;
+  --md-table-cell-padding: 10px 14px;
+}
+.markdown-theme-minimal {
+  --ai-bubble-background: #ffffff;
+  --ai-bubble-border: #e2e8f0;
+  --ai-bubble-accent: #94a3b8;
+  --md-table-background: #ffffff;
+  --md-table-header: #ffffff;
+  --md-table-text: #334155;
+  --md-table-border: #f1f5f9;
+  --md-table-cell-border: #f8fafc;
+  --md-table-cell-padding: 9px 12px;
+}
+.markdown-theme-academic {
+  --ai-bubble-background: #ffffff;
+  --ai-bubble-border: #cbd5e1;
+  --ai-bubble-accent: #64748b;
+  --md-table-background: #ffffff;
+  --md-table-header: #f8fafc;
+  --md-table-text: #334155;
+  --md-table-border: #cbd5e1;
+  --md-table-cell-border: #e2e8f0;
+  --md-table-cell-padding: 11px 14px;
+}
+.markdown-theme-apple {
+  --ai-bubble-background: #ffffff;
+  --ai-bubble-border: #d2d2d7;
+  --ai-bubble-accent: #86868b;
+  --md-table-background: #ffffff;
+  --md-table-header: #ffffff;
+  --md-table-text: #334155;
+  --md-table-border: #f1f5f9;
+  --md-table-cell-border: #f8fafc;
+  --md-table-cell-padding: 9px 12px;
+}
+.markdown-theme-warm {
+  --ai-bubble-background: #fffdf5;
+  --ai-bubble-border: #e4dcd3;
+  --ai-bubble-accent: #b58900;
+  --md-table-background: #fffdf5;
+  --md-table-header: #f5ece2;
+  --md-table-text: #586e75;
+  --md-table-border: #e4dcd3;
+  --md-table-cell-border: #eee8d5;
+  --md-table-cell-padding: 10px 14px;
+}
+.markdown-theme-compact {
+  --ai-bubble-background: #ffffff;
+  --ai-bubble-border: #e5e7eb;
+  --ai-bubble-accent: #64748b;
+  --md-table-background: #ffffff;
+  --md-table-header: #f8fafc;
+  --md-table-text: #334155;
+  --md-table-border: #f1f5f9;
+  --md-table-cell-border: #f8fafc;
+  --md-table-cell-padding: 6px 10px;
+}
+.markdown-theme-bauhaus {
+  --ai-bubble-background: #ffffff;
+  --ai-bubble-border: #111111;
+  --ai-bubble-accent: #002fa7;
+  --md-table-background: #ffffff;
+  --md-table-header: #f3f4f6;
+  --md-table-text: #111111;
+  --md-table-border: #111111;
+  --md-table-cell-border: #d1d5db;
+  --md-table-cell-padding: 9px 12px;
+}
+.markdown-theme-editorial {
+  --ai-bubble-background: #fcf9f5;
+  --ai-bubble-border: #dcd1c4;
+  --ai-bubble-accent: #8c2d19;
+  --md-table-background: #fcf9f5;
+  --md-table-header: #f7f3ed;
+  --md-table-text: #2c2520;
+  --md-table-border: #dcd1c4;
+  --md-table-cell-border: #e2d7c9;
+  --md-table-cell-padding: 11px 14px;
+}
+.markdown-theme-zen {
+  --ai-bubble-background: #f4f6f4;
+  --ai-bubble-border: #d8e2d8;
+  --ai-bubble-accent: #8fbc8f;
+  --md-table-background: #f4f6f4;
+  --md-table-header: #e8eee8;
+  --md-table-text: #4a5568;
+  --md-table-border: #d8e2d8;
+  --md-table-cell-border: #d8e2d8;
+  --md-table-cell-padding: 10px 14px;
+}
+.dark .markdown-theme-default,
+.dark .markdown-theme-minimal,
+.dark .markdown-theme-academic,
+.dark .markdown-theme-apple,
+.dark .markdown-theme-warm,
+.dark .markdown-theme-compact,
+.dark .markdown-theme-bauhaus,
+.dark .markdown-theme-editorial,
+.dark .markdown-theme-zen {
+  --ai-bubble-background: #1f2937;
+  --md-table-background: #1f2937;
+  --md-table-header: #374151;
+  --md-table-text: #e5e7eb;
+  --md-table-border: #4b5563;
+  --md-table-cell-border: #374151;
+}
+.markdown-theme-default,
+.markdown-theme-minimal,
+.markdown-theme-academic,
+.markdown-theme-apple,
+.markdown-theme-warm,
+.markdown-theme-compact,
+.markdown-theme-bauhaus,
+.markdown-theme-editorial,
+.markdown-theme-zen {
+  background-color: var(--ai-bubble-background) !important;
+  border-color: var(--ai-bubble-border) !important;
+  border-left-color: var(--ai-bubble-accent) !important;
+}
+.markdown-theme-default :deep(.markdown-table-scroll),
+.markdown-theme-minimal :deep(.markdown-table-scroll),
+.markdown-theme-academic :deep(.markdown-table-scroll),
+.markdown-theme-apple :deep(.markdown-table-scroll),
+.markdown-theme-warm :deep(.markdown-table-scroll),
+.markdown-theme-compact :deep(.markdown-table-scroll),
+.markdown-theme-bauhaus :deep(.markdown-table-scroll),
+.markdown-theme-editorial :deep(.markdown-table-scroll),
+.markdown-theme-zen :deep(.markdown-table-scroll) {
+  border-color: var(--md-table-border) !important;
+  background-color: var(--md-table-background) !important;
+}
+.markdown-theme-default :deep(table),
+.markdown-theme-minimal :deep(table),
+.markdown-theme-academic :deep(table),
+.markdown-theme-apple :deep(table),
+.markdown-theme-warm :deep(table),
+.markdown-theme-compact :deep(table),
+.markdown-theme-bauhaus :deep(table),
+.markdown-theme-editorial :deep(table),
+.markdown-theme-zen :deep(table) {
+  background-color: var(--md-table-background) !important;
+  color: var(--md-table-text) !important;
+}
+.markdown-theme-default :deep(th),
+.markdown-theme-minimal :deep(th),
+.markdown-theme-academic :deep(th),
+.markdown-theme-apple :deep(th),
+.markdown-theme-warm :deep(th),
+.markdown-theme-compact :deep(th),
+.markdown-theme-bauhaus :deep(th),
+.markdown-theme-editorial :deep(th),
+.markdown-theme-zen :deep(th) {
+  background-color: var(--md-table-header) !important;
+  color: var(--md-table-text) !important;
+  border-color: var(--md-table-cell-border) !important;
+  padding: var(--md-table-cell-padding) !important;
+}
+.markdown-theme-default :deep(td),
+.markdown-theme-minimal :deep(td),
+.markdown-theme-academic :deep(td),
+.markdown-theme-apple :deep(td),
+.markdown-theme-warm :deep(td),
+.markdown-theme-compact :deep(td),
+.markdown-theme-bauhaus :deep(td),
+.markdown-theme-editorial :deep(td),
+.markdown-theme-zen :deep(td) {
+  color: var(--md-table-text) !important;
+  border-color: var(--md-table-cell-border) !important;
+  padding: var(--md-table-cell-padding) !important;
+}
+.message-borderless {
+  border-width: 0 !important;
+  border-color: transparent !important;
+  border-left-color: transparent !important;
+  padding-left: 0.75rem !important;
+  padding-bottom: 0.125rem !important;
+  box-shadow: none !important;
+}
+:deep(.markdown-body .markdown-table-scroll) {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin: 1em 0;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  -webkit-overflow-scrolling: touch;
+}
+:deep(.markdown-body .markdown-table-scroll:last-child),
+:deep(.markdown-body > .markdown-table-scroll:last-child) {
+  margin-bottom: 0 !important;
+}
+:deep(.markdown-body table) {
+  display: table;
+  width: 100%;
+  min-width: 680px;
+  border: 0;
+  border-spacing: 0;
+  border-radius: 0;
+  margin: 0;
+  background: #ffffff;
+  font-size: 13px;
+  line-height: 1.55;
+}
+:deep(.markdown-body pre) {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre !important;
+  -webkit-overflow-scrolling: touch;
+}
+/* Scrollbar styles for mobile tables/code */
+:deep(.markdown-body pre)::-webkit-scrollbar,
+:deep(.markdown-body .markdown-table-scroll)::-webkit-scrollbar {
+  height: 4px;
+}
+:deep(.markdown-body pre)::-webkit-scrollbar-thumb,
+:deep(.markdown-body .markdown-table-scroll)::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.1);
+  border-radius: 2px;
+}
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: opacity 0.3s ease;
+}
+.drawer-enter-from,
+.drawer-leave-to {
+  opacity: 0;
+}
+:deep(.markdown-body th) {
+  padding: 10px 14px;
+  color: #334155;
+  background: #f8fafc;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: left !important;
+  white-space: nowrap;
+  border-bottom: 1px solid #dbe3ec;
+}
+:deep(.markdown-body td) {
+  padding: 10px 14px;
+  color: #334155;
+  vertical-align: top;
+  text-align: left !important;
+  border-bottom: 1px solid #eef2f7;
+  overflow-wrap: anywhere;
+}
+:deep(.markdown-body th + th),
+:deep(.markdown-body td + td) {
+  border-left: 1px solid #f1f5f9;
+}
+:deep(.markdown-body tbody tr:nth-child(even)) {
+  background-color: #fafbfd;
+}
+:deep(.markdown-body tbody tr:hover) {
+  background-color: #f1f5f9;
+}
+/* 深色下斑马纹必须换一套色。
+   表格底色走的是 `--md-table-background`（深色下 #1f2937），而文字色也已被
+   `--md-table-text` 抬成 #e5e7eb；若斑马纹仍沿用亮色的 #fafbfd，偶数行就成了
+   「白底 + 浅色字」——用户截图里那几行数字几乎看不见，正是这条导致的。
+   这里改用半透明白叠加，斑马纹在深底上自然浮起一层，且与任意气泡底色都能相容。 */
+.dark :deep(.markdown-body tbody tr:nth-child(even)) {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+.dark :deep(.markdown-body tbody tr:hover) {
+  background-color: rgba(255, 255, 255, 0.09);
+}
+:deep(.markdown-body tbody tr:last-child td) {
+  border-bottom: 0;
+}
+:deep(.markdown-body td:first-child) {
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+:deep(.markdown-body .markdown-table-toolbar) {
+  display: none;
+}
+@media (max-width: 639px) {
+  /* 少列表格：取消桌面端最小宽度，让常见结果一屏完成阅读。 */
+  :deep(.markdown-body .markdown-table-scroll) {
+    overflow-x: hidden;
+  }
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-cards) {
+    border: 0 !important;
+    border-radius: 0;
+    background: transparent !important;
+  }
+  :deep(.markdown-body .markdown-table-toolbar) {
+    display: flex;
+    justify-content: flex-start;
+    padding: 6px 6px 10px;
+  }
+  :deep(.markdown-body .markdown-table-view-toggle) {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 28px;
+    padding: 3px 8px;
+    border: 1px solid var(--md-table-border);
+    border-radius: 0;
+    color: var(--md-table-text);
+    background: var(--md-table-header);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.35;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+  }
+  :deep(.markdown-body .markdown-table-view-toggle::before) {
+    content: '▦';
+    font-size: 12px;
+    line-height: 1;
+  }
+  :deep(.markdown-body .markdown-table-view-toggle:hover) {
+    border-color: var(--md-table-text);
+    background: var(--md-table-background);
+  }
+  :deep(.markdown-body .markdown-table-view-toggle:focus-visible) {
+    outline: 2px solid var(--md-table-text);
+    outline-offset: 2px;
+  }
+  :deep(.markdown-body .markdown-table-view-toggle:active) {
+    transform: scale(0.97);
+  }
+  :deep(.markdown-body table.markdown-table-mobile-compact) {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-compact th),
+  :deep(.markdown-body table.markdown-table-mobile-compact td) {
+    padding: 7px 6px !important;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-compact th) {
+    font-size: 11px;
+  }
+
+  /* 多列表格：按数据行转成纵向信息卡片，字段名来自 th 的 data-label。 */
+  :deep(.markdown-body table.markdown-table-mobile-cards) {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    font-size: 12px;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-cards thead) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-cards tbody),
+  :deep(.markdown-body table.markdown-table-mobile-cards tr) {
+    display: block;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-cards tr) {
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--md-table-border) !important;
+    border-radius: 10px;
+    background: var(--md-table-background) !important;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-cards tr:last-child) {
+    margin-bottom: 0;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-cards td) {
+    display: grid;
+    grid-template-columns: minmax(72px, 34%) minmax(0, 1fr);
+    gap: 8px;
+    padding: 6px 0 !important;
+    border: 0 !important;
+    border-bottom: 1px solid var(--md-table-cell-border) !important;
+    color: var(--md-table-text) !important;
+    font-family: inherit;
+    font-size: 12px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-cards td:last-child) {
+    border-bottom: 0 !important;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-cards td::before) {
+    content: attr(data-label);
+    color: var(--md-table-text);
+    font-size: 11px;
+    font-weight: 700;
+  }
+  :deep(.markdown-body table.markdown-table-mobile-cards tbody tr:nth-child(even)) {
+    background: var(--md-table-background) !important;
+  }
+  /* 切换到表格后恢复宽表布局，由外层容器提供横向滚动。 */
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-table) {
+    overflow-x: auto;
+  }
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-table table.markdown-table-mobile-cards) {
+    display: table;
+    width: 100%;
+    min-width: 680px;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-table table.markdown-table-mobile-cards thead) {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
+    clip-path: none;
+    white-space: normal;
+  }
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-table table.markdown-table-mobile-cards tbody) {
+    display: table-row-group;
+  }
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-table table.markdown-table-mobile-cards tr) {
+    display: table-row;
+    margin: 0;
+    padding: 0;
+    border: 0 !important;
+    border-radius: 0;
+    background: var(--md-table-background) !important;
+  }
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-table table.markdown-table-mobile-cards td) {
+    display: table-cell;
+    grid-template-columns: none;
+    gap: 0;
+    padding: var(--md-table-cell-padding) !important;
+    border: 0 !important;
+    border-bottom: 1px solid var(--md-table-cell-border) !important;
+    color: var(--md-table-text) !important;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-table table.markdown-table-mobile-cards td + td) {
+    border-left: 1px solid var(--md-table-cell-border) !important;
+  }
+  :deep(.markdown-body .markdown-table-scroll.markdown-table-view-table table.markdown-table-mobile-cards td::before) {
+    content: none;
+  }
+}
+/* Highlight.js Color Overrides - Light Theme */
+:deep(.hljs-keyword),
+:deep(.hljs-selector-tag) {
+  color: #d73a49;
+}
+:deep(.hljs-string) {
+  color: #032f62;
+}
+:deep(.hljs-number) {
+  color: #005cc5;
+}
+:deep(.hljs-type),
+:deep(.hljs-built_in) {
+  color: #6f42c1;
+}
+:deep(.hljs-attr),
+:deep(.hljs-variable) {
+  color: #e36209;
+}
+:deep(.hljs-comment) {
+  color: #6a737d;
+  font-style: italic;
+}
+:deep(.hljs-function) {
+  color: #6f42c1;
+}
+:deep(.hljs-params) {
+  color: #24292e;
+}
+:deep(.hljs-meta) {
+  color: #005cc5;
+}
+:deep(.hljs-operator) {
+  color: #d73a49;
+}
+:deep(.hljs-title) {
+  color: #6f42c1;
+}
+:deep(.hljs-punctuation) {
+  color: #24292e;
+}
+:deep(.markdown-body .code-block-wrapper) {
+  position: relative;
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+:deep(.markdown-body .code-block-wrapper pre) {
+  margin: 0;
+}
+:deep(.markdown-body .code-copy-btn) {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%239ca3af'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z'/%3E%3C/svg%3E");
+  background-size: 16px;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-color: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s;
+  z-index: 10;
+}
+:deep(.markdown-body .code-block-wrapper:hover .code-copy-btn) {
+  opacity: 1;
+}
+:deep(.markdown-body .code-copy-btn:hover) {
+  background-color: #f3f4f6;
+  border-color: #d1d5db;
+}
+:deep(.markdown-body .code-copy-btn.copied) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2310b981'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M5 13l4 4L19 7'/%3E%3C/svg%3E");
+  border-color: #10b981;
+}
+
+/* 思维链扫光动效 (已关闭)
+.shimmer-thought-card {
+  position: relative !important;
+  overflow: hidden !important;
+}
+.shimmer-thought-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.45) 20%,
+    rgba(255, 255, 255, 0.75) 60%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: shimmer-slide 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+.dark .shimmer-thought-card::after {
+  background-image: linear-gradient(
+    90deg,
+    rgba(30, 41, 59, 0) 0%,
+    rgba(148, 163, 184, 0.08) 20%,
+    rgba(148, 163, 184, 0.15) 60%,
+    rgba(30, 41, 59, 0) 100%
+  );
+}
+@keyframes shimmer-slide {
+  100% {
+    transform: translateX(100%);
+  }
+}
+*/
+
+/* 思维链局部温和呼吸动效 */
+@keyframes pulse-subtle {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.custom-table-render :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  background-color: #ffffff;
+}
+.dark .custom-table-render :deep(table) {
+  background-color: #1f2937;
+}
+.custom-table-render :deep(th),
+.custom-table-render :deep(td) {
+  border: 1px solid #e5e7eb;
+  padding: 6px 8px;
+  text-align: left;
+  word-break: break-all;
+}
+.dark .custom-table-render :deep(th),
+.dark .custom-table-render :deep(td) {
+  border-color: #374151;
+}
+.custom-table-render :deep(th) {
+  background-color: #f3f4f6;
+  font-weight: 700;
+  color: #1f2937;
+}
+.dark .custom-table-render :deep(th) {
+  background-color: #374151;
+  color: #f9fafb;
+}
+.custom-table-render :deep(tr:nth-child(even)) {
+  background-color: #f9fafb;
+}
+.dark .custom-table-render :deep(tr:nth-child(even)) {
+  background-color: rgba(31, 41, 55, 0.4);
+}
+.custom-table-render :deep(caption) {
+  font-size: 10px;
+  color: #6b7280;
+  padding: 6px 4px;
+  font-weight: 700;
+  text-align: left;
+  background-color: rgba(243, 244, 246, 0.5);
+  border-bottom: 2px solid #e5e7eb;
+}
+.dark .custom-table-render :deep(caption) {
+  color: #9ca3af;
+  background-color: rgba(55, 65, 81, 0.5);
+  border-color: #4b5563;
+}
+</style>

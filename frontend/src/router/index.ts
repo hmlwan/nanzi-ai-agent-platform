@@ -52,6 +52,13 @@ const router = createRouter({
           meta: { public: true, title: '嵌入式对话' } 
         },
         {
+          // 一览通独立定制入口，沿用嵌入页自身的票据认证。
+          path: 'ylt-chat',
+          name: 'YltEmbedChat',
+          component: () => import('../views/YltEmbedChat.vue'),
+          meta: { public: true, title: '一览通嵌入式对话' }
+        },
+        {
           // 供第三方 iframe 嵌入的个人中心，内容与 /dashboard/personal 一致，
           // 仅去掉 Dashboard 的顶部 header（面包屑）与左侧边栏。
           // public: 与 /embed/chat 同口径——凭据由 iframe 自行携带
