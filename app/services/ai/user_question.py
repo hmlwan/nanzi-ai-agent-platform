@@ -98,8 +98,11 @@ def build_user_question_receipt(
     selected_option_ids: list[str],
     custom_input: str = "",
     cancelled: bool = False,
+    skipped: bool = False,
 ) -> str:
     """Build the structured user message sent after a question-card answer."""
+    if skipped:
+        selected_option_ids, custom_input, cancelled = [], "", False
     selected = json.dumps(
         [str(item).strip() for item in selected_option_ids if str(item).strip()],
         ensure_ascii=False,
@@ -111,7 +114,9 @@ def build_user_question_receipt(
         f"selected_option_ids: {selected}\n"
         f"custom_input: {str(custom_input or '').strip()}"
     ]
-    if cancelled:
+    if skipped:
+        lines.append("skipped: true")
+    elif cancelled:
         lines.append("cancelled: true")
     return "\n".join(lines).strip()
 
@@ -145,6 +150,7 @@ def parse_user_question_receipt(text: str | None) -> dict[str, Any] | None:
         "selected_option_ids": [item.strip() for item in selected if item.strip()],
         "custom_input": values.get("custom_input", "").strip(),
         "cancelled": values.get("cancelled", "").lower() == "true",
+        **({"skipped": True} if values.get("skipped", "").lower() == "true" else {}),
     }
 
 

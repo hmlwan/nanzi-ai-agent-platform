@@ -14,6 +14,7 @@ export interface AgentTask {
   subscription_id?: number
   report_id?: string
   cron_expr: string
+  cron_valid?: boolean
   prompt: string
   status: number // 0-Stopped, 1-Running, 2-Error
   run_count: number

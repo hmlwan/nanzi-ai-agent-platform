@@ -818,7 +818,7 @@ const realizedActiveCategory = computed(() => {
   const cats = orderedCategories.value
   if (!cats.length) return ''
   if (cats.includes(activeConfigCategory.value)) return activeConfigCategory.value
-  return cats[0]
+  return cats[0] ?? ''
 })
 /**
  * 把当前分组卡片滚到它所在滚动容器的顶部。
@@ -917,6 +917,9 @@ const configSearchResults = computed(() => {
 
 // 搜索交互状态
 const configSearchOpen = ref(false)
+const closeConfigSearchAfterBlur = () => {
+  window.setTimeout(() => { configSearchOpen.value = false }, 150)
+}
 const configSearchInputRef = ref<HTMLInputElement | null>(null)
 const highlightedConfigKey = ref('')
 
@@ -4215,7 +4218,7 @@ onUnmounted(() => {
                            placeholder="搜索参数…（⌘K）"
                            class="w-full border-0 bg-transparent p-0 text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none focus:ring-0"
                            @focus="configSearchOpen = true"
-                           @blur="setTimeout(() => (configSearchOpen = false), 150)"
+                           @blur="closeConfigSearchAfterBlur"
                            @click="configSearchOpen = true"
                          />
                          <button

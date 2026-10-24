@@ -270,7 +270,7 @@ const startStream = async (url: string) => {
 }
 
 watch(
-  () => [props.open, props.streamUrl],
+  () => [props.open, props.streamUrl] as const,
   ([isOpen, url]) => {
     abortCurrent()
     if (isOpen && url) {

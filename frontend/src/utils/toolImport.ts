@@ -89,7 +89,7 @@ export const tokenizeShellLike = (text: string): string[] => {
             touched = true
             continue
         }
-        if (/\s/.test(char)) {
+        if (char !== undefined && /\s/.test(char)) {
             if (touched || current) {
                 tokens.push(current)
                 current = ''
@@ -143,7 +143,8 @@ const parseUrl = (
 
     const pathParams: string[] = []
     for (const found of `${path || ''}`.matchAll(PLACEHOLDER_RE)) {
-        if (!pathParams.includes(found[1])) pathParams.push(found[1])
+        const name = found[1]
+        if (name && !pathParams.includes(name)) pathParams.push(name)
     }
 
     const queryParams: ParsedQueryParam[] = []
@@ -196,6 +197,7 @@ const parseCurl = (text: string): ParsedRequest | ParseFailure => {
 
     for (let i = 0; i < rest.length; i += 1) {
         const token = rest[i]
+        if (token === undefined) continue
         const next = rest[i + 1]
 
         if (token === '-X' || token === '--request') {

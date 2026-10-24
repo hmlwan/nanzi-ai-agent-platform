@@ -904,7 +904,7 @@ function findWorkspacePrewarmPending(items: ProcessTimelineItem[]): boolean {
   // 因此不能只检查前两层，需递归检查每个 text/log 节点及其所有后代。
   const walk = (node: ProcessTimelineItem): boolean => {
     if (isWorkspacePrewarmPending(node)) return true;
-    for (const child of node.children || []) {
+    for (const child of ('children' in node ? node.children : []) || []) {
       if (walk(child)) return true;
     }
     return false;

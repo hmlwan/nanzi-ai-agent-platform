@@ -134,8 +134,16 @@ class PreflightStep(BasePipelineStep):
                     selected_option_ids=receipt["selected_option_ids"],
                     custom_input=receipt["custom_input"],
                     cancelled=receipt["cancelled"],
+                    **({"skipped": True} if receipt.get("skipped") else {}),
                 )
-                context.user_question_cancelled = bool(receipt["cancelled"])
+                # 以服务端已确认的终态为准，重复回执不能把跳过篡改成取消。
+                context.user_question_cancelled = submitted_question.get("status") == "cancelled"
+                if submitted_question.get("status") == "skipped":
+                    from app.services.ai.user_question import build_user_question_receipt
+
+                    incoming_user_message["content"] = build_user_question_receipt(
+                        question_id=receipt["question_id"], selected_option_ids=[], skipped=True,
+                    ) + "\n用户已跳过本问题：继续原任务，不要重复询问该问题。将缺失信息标记为待确认，不编造答案；已有信息足够时给出有依据的结论，否则询问下一个关键问题。若缺失信息阻断执行，请说明限制，不要猜测执行。"
                 restored_dataset_ids = metadata_dataset_ids_from_user_question_record(
                     submitted_question
                 )

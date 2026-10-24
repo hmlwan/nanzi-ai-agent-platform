@@ -191,7 +191,8 @@ const goToCrumb = (index: number) => {
     activeIndex.value = 0;
     return;
   }
-  void loadDir(breadcrumbs.value[index].path);
+  const breadcrumb = breadcrumbs.value[index];
+  if (breadcrumb) void loadDir(breadcrumb.path);
 };
 
 const runSearch = async (query: string) => {
@@ -217,7 +218,7 @@ const runSearch = async (query: string) => {
 const currentDirItems = () =>
   breadcrumbs.value.length === 0
     ? (dirCache.get("") ?? [])
-    : (dirCache.get(breadcrumbs.value[breadcrumbs.value.length - 1].path) ?? []);
+    : (dirCache.get(breadcrumbs.value[breadcrumbs.value.length - 1]?.path ?? "") ?? []);
 
 watch(keyword, (value) => {
   if (searchTimer) clearTimeout(searchTimer);
@@ -239,7 +240,7 @@ const handleReset = () => {
     return;
   }
   if (breadcrumbs.value.length > 0) {
-    void loadDir(breadcrumbs.value[breadcrumbs.value.length - 1].path);
+    void loadDir(breadcrumbs.value[breadcrumbs.value.length - 1]?.path ?? "");
     return;
   }
   void loadRoot();

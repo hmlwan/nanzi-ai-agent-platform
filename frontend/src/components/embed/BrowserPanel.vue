@@ -2443,24 +2443,17 @@ const connect = async () => {
       reason?: string | null;
       captcha?: boolean;
       detected?: boolean;
+      requires_human?: boolean;
       action?: string;
       detail?: string;
+      at?: string;
+      phase?: string;
+      attempt?: number;
+      max_attempts?: number;
+      extra?: AiAction['extra'];
     };
     try {
-      payload = JSON.parse(event.data) as {
-        type?: string;
-        snapshot?: BrowserSnapshot;
-        tabs?: BrowserTab[];
-        message?: string;
-        focused_input?: boolean;
-        owner?: ControlOwner;
-        reason?: string | null;
-        captcha?: boolean;
-        detected?: boolean;
-        requires_human?: boolean;
-        action?: string;
-        detail?: string;
-      };
+      payload = JSON.parse(event.data) as typeof payload;
     } catch {
       errorMessage.value = '浏览器返回了无法识别的消息';
       return;

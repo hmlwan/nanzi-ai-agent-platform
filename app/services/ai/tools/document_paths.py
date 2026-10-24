@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from typing import Any, Iterable
 
 from app.utils.fs_paths import get_data_base_dir
@@ -140,13 +141,30 @@ async def resolve_document_input_path(
     user_name: str | None = None,
 ) -> Path:
     """Resolve one existing document, limited to this request's attachments or workspace."""
-    candidate = _normalize_platform_path(path)
+    raw_path = str(path or "").strip()
+    parsed = urlsplit(raw_path)
+    artifact_match = re.fullmatch(
+        r"(?:/api/v1/chat/generated-files/)?([0-9a-f]{32})", parsed.path,
+    )
+    if artifact_match and parsed.scheme in {"", "http", "https"}:
+        from app.services.ai.tools.generated_file_service import resolve_workspace_artifact
+
+        tokens = parse_qs(parsed.query).get("token", [])
+        artifact = await resolve_workspace_artifact(
+            artifact_match.group(1), tokens[0] if len(tokens) == 1 else "",
+        )
+        if artifact is None:
+            raise DocumentPathError("生成文件链接无效、已过期或文件不可访问")
+        candidate = artifact.path.resolve()
+    else:
+        candidate = _normalize_platform_path(raw_path)
     if not candidate.is_file():
         raise DocumentPathError("文件不存在或不可访问")
     if candidate.stat().st_size > MAX_DOCUMENT_BYTES:
         raise DocumentPathError("文件大小超出 20MB 限制")
     _validate_extension(candidate, allowed_extensions)
 
+    # 下载凭据仅用于定位已登记的产物，仍必须通过下方附件/用户工作区归属检查。
     allowed_resolved = {_normalize_platform_path(item) for item in allowed_attachment_paths}
     if candidate in allowed_resolved:
         return candidate

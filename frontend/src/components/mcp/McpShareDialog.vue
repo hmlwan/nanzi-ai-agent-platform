@@ -53,7 +53,7 @@ const urlEmbedsCredential = computed(() => {
   const url = String(props.server?.sse_url || '')
   if (!url) return false
   const withoutOrigin = url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+/i, '')
-  const [pathPart, queryPart = ''] = withoutOrigin.split('?')
+  const [pathPart = '', queryPart = ''] = withoutOrigin.split('?')
   const looksSecret = (segment: string) =>
     /^[0-9a-f]{12,}$/i.test(segment) || /^[A-Za-z0-9_-]{24,}$/.test(segment)
   if (pathPart.split('/').filter(Boolean).some(looksSecret)) return true

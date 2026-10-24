@@ -723,20 +723,21 @@ function isEligibleLiveTimerLog(item: ProcessTimelineLogItem): boolean {
 export function resolveLiveTimerLogId(
   items: ProcessTimelineItem[] | undefined,
 ): string | null {
-  let lastPending: ProcessTimelineLogItem | null = null;
+  const pendingLogs: ProcessTimelineLogItem[] = [];
 
   const walk = (list: ProcessTimelineItem[] | undefined) => {
     for (const item of list || []) {
       if (!item) continue;
       if (item.kind === "log" && item.status === "pending") {
-        lastPending = item;
+        pendingLogs.push(item);
       }
-      walk(item.children as ProcessTimelineItem[] | undefined);
+      if ('children' in item) walk(item.children);
     }
   };
 
   walk(items);
 
+  const lastPending = pendingLogs[pendingLogs.length - 1];
   if (!lastPending) return null;
   if (!isEligibleLiveTimerLog(lastPending)) return null;
   return String(lastPending.id);

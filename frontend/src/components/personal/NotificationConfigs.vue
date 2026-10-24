@@ -786,7 +786,7 @@ interface ChannelGuide {
   tips?: string
 }
 
-const GUIDE_DATA: Record<string, ChannelGuide> = {
+const GUIDE_DATA = {
   dingtalk: {
     channel: 'dingtalk',
     title: '钉钉群自定义机器人配置指引',
@@ -860,7 +860,10 @@ const GUIDE_DATA: Record<string, ChannelGuide> = {
   }
 }
 
-const activeGuide = computed(() => GUIDE_DATA[currentGuideChannel.value] || GUIDE_DATA.dingtalk)
+const activeGuide = computed(() => {
+  const guides: Record<string, ChannelGuide> = GUIDE_DATA
+  return guides[currentGuideChannel.value] ?? GUIDE_DATA.dingtalk
+})
 
 const openGuide = (channel: 'dingtalk' | 'wechat_work' | 'feishu' | 'email') => {
   currentGuideChannel.value = channel

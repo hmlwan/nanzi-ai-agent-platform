@@ -8,7 +8,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (event: "submit", payload: { selectedOptionIds: string[]; customInput: string; cancelled: boolean }): void;
+  (event: "submit", payload: { selectedOptionIds: string[]; customInput: string; cancelled: boolean; skipped?: boolean }): void;
 }>();
 
 const selectedOptionIds = ref<string[]>([]);
@@ -50,12 +50,14 @@ const locked = computed(
     Boolean(props.disabled) ||
     props.payload.status === "submitted" ||
     props.payload.status === "cancelled" ||
+    props.payload.status === "skipped" ||
     props.payload.status === "stale",
 );
 
 const statusLabel = computed(() => {
   if (props.payload.status === "submitted") return "已提交";
   if (props.payload.status === "cancelled") return "已取消";
+  if (props.payload.status === "skipped") return "已跳过";
   if (props.payload.status === "stale") return "已失效";
   return "等待回答";
 });
@@ -103,6 +105,15 @@ async function cancel() {
   if (props.payload.status === "pending") {
     isSubmitting.value = false;
   }
+}
+
+// 跳过不要求选择答案，与取消任务分别回传，等待状态同步后防止重复点击。
+async function skip() {
+  if (locked.value || isSubmitting.value) return;
+  isSubmitting.value = true;
+  emit("submit", { selectedOptionIds: [], customInput: "", cancelled: false, skipped: true });
+  await nextTick();
+  if (props.payload.status === "pending") isSubmitting.value = false;
 }
 </script>
 
@@ -255,6 +266,14 @@ async function cancel() {
               @click="submit"
             >
               提交回答并继续
+            </button>
+            <button
+              type="button"
+              class="inline-flex items-center rounded-md border border-violet-200 px-2.5 py-1 text-xs font-medium text-violet-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-violet-800 dark:text-violet-200"
+              :disabled="locked || isSubmitting"
+              @click="skip"
+            >
+              跳过
             </button>
             <button
               type="button"

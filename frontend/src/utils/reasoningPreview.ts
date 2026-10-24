@@ -81,7 +81,7 @@ export function reasoningCharCount(raw: string): number {
 function headPreview(flat: string): string {
   const head = flat.slice(0, REASONING_PREVIEW_MAX_CHARS);
   for (let index = head.length - 1; index >= REASONING_PREVIEW_MIN_CHARS; index -= 1) {
-    if (SENTENCE_BREAKS.includes(head[index])) return head.slice(0, index + 1);
+    if (SENTENCE_BREAKS.includes(head.charAt(index))) return head.slice(0, index + 1);
   }
   return head;
 }
@@ -91,7 +91,7 @@ function tailPreview(flat: string): string {
   const tail = flat.slice(-REASONING_PREVIEW_MAX_CHARS);
   const limit = Math.min(TAIL_BOUNDARY_WINDOW, tail.length - 1);
   for (let index = 0; index < limit; index += 1) {
-    if (TAIL_BOUNDARY.test(tail[index])) return tail.slice(index + 1);
+    if (TAIL_BOUNDARY.test(tail.charAt(index))) return tail.slice(index + 1);
   }
   return tail;
 }

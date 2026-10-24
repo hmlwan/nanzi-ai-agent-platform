@@ -116,10 +116,13 @@ class UserQuestionStore:
         selected_option_ids: list[str],
         custom_input: str = "",
         cancelled: bool = False,
+        skipped: bool = False,
     ) -> dict[str, Any]:
         key = self._key(user_id, conversation_id, question_id)
         active_key = self._active_key(user_id, conversation_id)
         async with self._submission_lock(key):
+            if cancelled and skipped:
+                raise ValueError("跳过与取消不能同时提交")
             record = await self._get(key)
             if record is None:
                 raise PermissionError("问题不存在或不属于当前会话")
@@ -127,10 +130,18 @@ class UserQuestionStore:
                 return copy.deepcopy(record)
             if record.get("status") == "cancelled":
                 return copy.deepcopy(record)
+            if record.get("status") == "skipped":
+                return copy.deepcopy(record)
             if record.get("status") != "pending" or self._is_expired(record):
                 raise ValueError("问题已过期，无法提交回答")
 
             selected = [str(item).strip() for item in selected_option_ids if str(item).strip()]
+            # 跳过是独立终态，不要求答案，也不保存未提交的选项或补充输入。
+            if skipped:
+                record.update({"status": "skipped", "selected_option_ids": [], "custom_input": "", "skipped_at": int(time.time())})
+                await self._set(key, record)
+                await self._delete(active_key)
+                return copy.deepcopy(record)
             if cancelled:
                 record.update(
                     {

@@ -92,8 +92,8 @@ const getResourceStyle = (key: string) => {
     >
       <div class="flex items-center gap-2.5">
         <span
-          class="flex shrink-0 items-center justify-center rounded-lg transition-transform group-hover:scale-110"
-          :class="compact ? 'h-9 w-9 rounded-[10px]' : 'h-10 w-10 rounded-xl', getResourceStyle(item.key).iconBg"
+            class="flex shrink-0 items-center justify-center rounded-lg p-1 transition-transform group-hover:scale-110"
+            :class="[compact ? 'h-5 w-5' : 'h-6 w-6', getResourceStyle(item.key).iconBg]"
         >
           <!-- memory -->
           <svg v-if="item.key === 'memory'" :class="compact ? 'h-5 w-5' : 'h-[22px] w-[22px]'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

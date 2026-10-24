@@ -1540,11 +1540,18 @@ interface ChatFile {
   memoryMeta?: any[];
 }
 
+interface QuickQuestionContext {
+  source: "chatbi_result";
+  result_id?: string;
+  requires_fresh_data: boolean;
+}
+
 interface ChatSendSnapshot {
   content: string;
   files: ChatFile[];
   clientRequestId: string;
   groundingAction?: Record<string, unknown>;
+  quickContext?: QuickQuestionContext;
 }
 
 interface ChatSendOverrides {
@@ -1552,6 +1559,7 @@ interface ChatSendOverrides {
   files?: ChatFile[];
   clientRequestId?: string;
   groundingAction?: Record<string, unknown>;
+  quickContext?: QuickQuestionContext;
 }
 
 interface DatasetCapabilityQuestion {
@@ -1816,13 +1824,6 @@ const clearContext = (key?: string) => {
 const openFullLogs = (traceId: string) => {
   activeTraceId.value = traceId;
   showFullLogViewer.value = true;
-};
-
-const openRawPrompt = (msg: Message) => {
-  if (msg.rawPrompt) {
-    selectedRawPrompt.value = msg.rawPrompt;
-    showRawPromptModal.value = true;
-  }
 };
 
 const openExecutionDetail = (msg: Message) => {
@@ -2764,7 +2765,13 @@ const handleChatBIResultAction = async (
   }
 };
 
-const handleQuickQuestion = async (question: string, action: "send" | "fill" = "send", sourceContent?: string) => {
+const handleQuickQuestion = async (
+  payload: string | { question: string; quick_context?: QuickQuestionContext },
+  action: "send" | "fill" = "send",
+  sourceContent?: string,
+) => {
+  const question = typeof payload === "string" ? payload : payload.question;
+  const quickContext = typeof payload === "string" ? undefined : payload.quick_context;
   if (!question) return;
   if (action === "send" && (isProcessing.value || remoteRunBusy.value || sendLocked.value)) return;
   const selectedSource = sourceContent?.trim();
@@ -2772,7 +2779,7 @@ const handleQuickQuestion = async (question: string, action: "send" | "fill" = "
     ? `${question}${USER_MESSAGE_CONTEXT_DIVIDER}【被点击的 AI 回复】\n${selectedSource}`
     : question;
   if (action === "send") {
-    await sendMessage({ content: nextContent });
+    await sendMessage({ content: nextContent, quickContext });
   } else {
     userInput.value = nextContent;
   }
@@ -3442,6 +3449,7 @@ const captureSendSnapshot = (overrides: ChatSendOverrides = {}): ChatSendSnapsho
         .map((file) => ({ ...file })),
   clientRequestId: overrides.clientRequestId || createClientRequestId(),
   groundingAction: overrides.groundingAction ? { ...overrides.groundingAction } : undefined,
+  quickContext: overrides.quickContext ? { ...overrides.quickContext } : undefined,
 });
 
 const sendPreparedMessage = async (
@@ -3613,6 +3621,7 @@ const sendMessageInternal = async (snapshot: ChatSendSnapshot) => {
       requestBody.metadata_dataset_ids = turnMetadataDatasetIds;
     }
     if (snapshot.groundingAction) requestBody.grounding_action = snapshot.groundingAction;
+    if (snapshot.quickContext) requestBody.quick_context = snapshot.quickContext;
     requestBody.client_request_id = snapshot.clientRequestId;
 
     const response = await fetch("/api/v1/chat/completions", {
@@ -4175,7 +4184,7 @@ const submitBusinessConfirmation = async (
 
 const submitUserQuestion = async (
   msg: Message,
-  payload: { selectedOptionIds: string[]; customInput: string; cancelled: boolean },
+  payload: { selectedOptionIds: string[]; customInput: string; cancelled: boolean; skipped?: boolean },
 ) => {
   const card = msg.userQuestion;
   if (!card || card.status !== "pending" || isProcessing.value) return;
@@ -4186,10 +4195,11 @@ const submitUserQuestion = async (
     payload.cancelled,
     card.question,
     card.options,
+    payload.skipped,
   );
   card.selected_option_ids = [...payload.selectedOptionIds];
   card.custom_input = payload.customInput;
-  card.status = payload.cancelled ? "cancelled" : "submitted";
+  card.status = payload.cancelled ? "cancelled" : payload.skipped ? "skipped" : "submitted";
   // 同步收尾时间线步骤，否则提交后该步骤仍显示「进行中」呼吸灯
   markUserQuestionTimelineResolved(msg.processTimeline, card.question_id);
   userInput.value = content;

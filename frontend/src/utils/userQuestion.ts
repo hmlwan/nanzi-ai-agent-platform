@@ -14,7 +14,7 @@ export interface UserQuestionState {
   is_multi_select: boolean;
   allow_custom_input: boolean;
   context?: string;
-  status: "pending" | "submitted" | "cancelled" | "stale";
+  status: "pending" | "submitted" | "cancelled" | "skipped" | "stale";
   selected_option_ids?: string[];
   custom_input?: string;
 }
@@ -62,7 +62,14 @@ export function buildUserQuestionUserMessage(
   cancelled = false,
   question = "",
   options: UserQuestionOption[] = [],
+  skipped = false,
 ): string {
+  // 跳过只传递意图，不把尚未提交的勾选或输入误当成用户答案。
+  if (skipped) {
+    selectedOptionIds = [];
+    customInput = "";
+    cancelled = false;
+  }
   const lines = [USER_QUESTION_MESSAGE_PREFIX];
   if (question && question.trim()) {
     lines.push(`问题: ${question.trim()}`);
@@ -83,7 +90,9 @@ export function buildUserQuestionUserMessage(
     `selected_option_ids: ${JSON.stringify(selectedOptionIds)}`,
     `custom_input: ${customInput.trim()}`,
   );
-  if (cancelled) {
+  if (skipped) {
+    lines.push("skipped: true", "用户跳过本问题，请继续原任务，不要重复询问本问题；将缺失信息标记为待确认，不要编造。已有信息足够时直接给出有依据的结论，否则询问下一个关键问题；若缺失信息阻断执行，请说明限制，不要猜测执行。");
+  } else if (cancelled) {
     lines.push("cancelled: true", "用户取消了本次提问，请停止当前任务，不要再次询问同一个问题。");
   } else {
     lines.push("请根据以上用户回答继续处理原问题。");
@@ -152,6 +161,7 @@ export type UserQuestionReceipt = {
   selected_option_ids: string[];
   custom_input: string;
   cancelled: boolean;
+  skipped?: boolean;
 };
 
 /**
@@ -185,6 +195,7 @@ export function parseUserQuestionReceipt(text: string | null | undefined): UserQ
     selected_option_ids: selected.map((item) => item.trim()).filter(Boolean),
     custom_input: (values["custom_input"] || "").trim(),
     cancelled: (values["cancelled"] || "").toLowerCase() === "true",
+    skipped: (values["skipped"] || "").toLowerCase() === "true",
   };
 }
 
@@ -275,9 +286,9 @@ export function applyUserQuestionReceipts<
     if (!question) continue;
     const receipt = byQuestionId.get(question.question_id);
     if (!receipt) continue;
-    question.status = receipt.cancelled ? "cancelled" : "submitted";
-    question.selected_option_ids = receipt.cancelled ? [] : receipt.selected_option_ids;
-    question.custom_input = receipt.cancelled ? "" : receipt.custom_input;
+    question.status = receipt.cancelled ? "cancelled" : receipt.skipped ? "skipped" : "submitted";
+    question.selected_option_ids = receipt.cancelled || receipt.skipped ? [] : receipt.selected_option_ids;
+    question.custom_input = receipt.cancelled || receipt.skipped ? "" : receipt.custom_input;
     markUserQuestionTimelineResolved(message.processTimeline as unknown[], question.question_id);
   }
 }

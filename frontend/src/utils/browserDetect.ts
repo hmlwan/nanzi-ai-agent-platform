@@ -38,15 +38,15 @@ export function parseBrowserInfo(userAgent: string): { name: string; version: st
     let ver = '11.0'
     const msieMatch = ua.match(/MSIE\s([0-9.]+)/i)
     const rvMatch = ua.match(/rv:([0-9.]+)/i)
-    if (msieMatch) ver = msieMatch[1]
-    else if (rvMatch) ver = rvMatch[1]
+    if (msieMatch?.[1]) ver = msieMatch[1]
+    else if (rvMatch?.[1]) ver = rvMatch[1]
     const major = parseInt(ver, 10) || 11
     return { name: 'Internet Explorer', version: ver, majorVersion: major }
   }
 
   // 2. Microsoft Edge (Edg/ or Edge/)
   const edgeMatch = ua.match(/Edg(?:e)?\/([0-9.]+)/i)
-  if (edgeMatch) {
+  if (edgeMatch?.[1]) {
     const ver = edgeMatch[1]
     const major = parseInt(ver, 10) || 0
     return { name: 'Edge', version: ver, majorVersion: major }
@@ -54,7 +54,7 @@ export function parseBrowserInfo(userAgent: string): { name: string; version: st
 
   // 3. Opera (OPR/)
   const operaMatch = ua.match(/OPR\/([0-9.]+)/i)
-  if (operaMatch) {
+  if (operaMatch?.[1]) {
     const ver = operaMatch[1]
     const major = parseInt(ver, 10) || 0
     return { name: 'Opera', version: ver, majorVersion: major }
@@ -62,7 +62,7 @@ export function parseBrowserInfo(userAgent: string): { name: string; version: st
 
   // 4. Firefox
   const firefoxMatch = ua.match(/(?:Firefox|FxiOS)\/([0-9.]+)/i)
-  if (firefoxMatch) {
+  if (firefoxMatch?.[1]) {
     const ver = firefoxMatch[1]
     const major = parseInt(ver, 10) || 0
     return { name: 'Firefox', version: ver, majorVersion: major }
@@ -70,7 +70,7 @@ export function parseBrowserInfo(userAgent: string): { name: string; version: st
 
   // 5. Chrome / Chromium (需在 Edge, Opera 等之后判定)
   const chromeMatch = ua.match(/(?:Chrome|CriOS)\/([0-9.]+)/i)
-  if (chromeMatch) {
+  if (chromeMatch?.[1]) {
     const ver = chromeMatch[1]
     const major = parseInt(ver, 10) || 0
     return { name: 'Chrome', version: ver, majorVersion: major }
@@ -78,7 +78,7 @@ export function parseBrowserInfo(userAgent: string): { name: string; version: st
 
   // 6. Safari (排除 Chrome/CriOS/Android 伪装)
   const safariMatch = ua.match(/Version\/([0-9.]+).*Safari/i)
-  if (safariMatch && !/Chrome|Android|CriOS/i.test(ua)) {
+  if (safariMatch?.[1] && !/Chrome|Android|CriOS/i.test(ua)) {
     const ver = safariMatch[1]
     const major = parseInt(ver, 10) || 0
     return { name: 'Safari', version: ver, majorVersion: major }

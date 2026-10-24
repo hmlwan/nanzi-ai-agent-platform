@@ -690,7 +690,7 @@ watch([cronMode, cronConfig], () => {
 
   try {
       let expr = ''
-      const [h, m] = (time || '00:00').split(':').map(Number)
+      const [h = NaN, m = NaN] = (time || '00:00').split(':').map(Number)
       // 若 time 被清空或格式非法，h/m 可能是 NaN，直接 bail out
       if (isNaN(h) || isNaN(m)) {
         console.warn('Invalid time value, skipping cron build')
@@ -867,7 +867,7 @@ const openCreateModal = async () => {
 
 const openEditModal = async (task: AgentTask) => {
   if (task.task_type === 'metadata_inspection') {
-    showToast('元数据巡检为系统级内置任务，请前往【元数据管理】配置执行周期', 'info')
+    showToast('元数据巡检为系统级内置任务，请前往【元数据管理】配置执行周期', 'warning')
     return
   }
   if (task.task_type === 'saved_report') {

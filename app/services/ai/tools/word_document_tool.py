@@ -1,7 +1,5 @@
 """Controlled Word document tools for configured agents."""
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, Literal
 
 from docx import Document
 
@@ -58,12 +56,17 @@ async def _result(output_path, summary: str, changes: dict[str, Any]) -> dict[st
         conversation_id=context.conversation_id,
         trace_id=context.trace_id,
     )
-    return {"status": "ok", "summary": summary, "changes": changes, "artifact": artifact.to_tool_payload()}
+    return {"status": "ok", "summary": summary, "changes": changes, "path": str(output_path), "artifact": artifact.to_tool_payload()}
 
 
 @tool
-async def word_document_read(action: str, path: str, start: int = 0, limit: int = 20) -> dict[str, Any]:
-    """Inspect a Word document or read a bounded page of paragraphs."""
+async def word_document_read(action: Literal["inspect", "read_content", "read"], path: str, start: int = 0, limit: int = 20) -> dict[str, Any]:
+    """Read Word: action='inspect' for overview or 'read_content' for paragraphs.
+    'read' is a compatibility alias for 'read_content'. Use path returned by word_document_write;
+    its generated-file download URL is also accepted.
+    """
+    if action == "read":
+        action = "read_content"
     if action not in {"inspect", "read_content"}:
         raise DocumentPathError("word_document_read 仅支持 inspect 或 read_content")
     document = Document(await _input_path(path))
@@ -81,7 +84,8 @@ async def word_document_write(action: str, output_filename: str, path: str | Non
     """Create or modify a Word document copy and return a download link.
 
     Copy artifact.download_url verbatim in the final response; do not alter its
-    protocol, host, path, or token.
+    protocol, host, path, or token. For subsequent reads or edits, use the
+    returned path instead of constructing a path from the filename or link.
     """
     if action not in {"create", "replace_text", "append_paragraphs", "append_table"}:
         raise DocumentPathError("word_document_write 不支持该操作")

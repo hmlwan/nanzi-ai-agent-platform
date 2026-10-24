@@ -629,6 +629,8 @@ const confirmOverwrite = async () => {
 
 const resolveUrlPath = (val: string): string => {
   if (!val) return '';
+  // 页内锚点直接交给报告定位，不能转成需要认证的文件预览接口。
+  if (val.startsWith('#')) return val;
   if (isDirectRenderableUrl(val)) {
     return val;
   }

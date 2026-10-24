@@ -105,6 +105,7 @@ const closeToast = () => {
 const userInfo = ref({
   id: 0,
   user_name: "",
+  real_name: "",
   role: "",
   permissions: {},
   created_at: "",
